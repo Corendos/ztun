@@ -1,105 +1,109 @@
 const std = @import("std");
 const testing = std.testing;
 
-pub const Message = struct {
-    pub const Class = enum(u2) {
-        request = 0b00,
-        indication = 0b01,
-        success_response = 0b10,
-        error_response = 0b11,
-    };
+pub const message = @import("message.zig");
 
-    pub const Method = enum(u12) {
-        binding = 0b000000000001,
-    };
-
-    pub const Type = packed struct {
-        value: u14,
-        _reserved0: u2 = 0,
-
-        const Self = @This();
-        pub fn fromClassAndMethod(class: Class, method: Method) Self {
-            // Message type is encoded as following :
-            //  0                 1
-            //  2  3  4 5 6 7 8 9 0 1 2 3 4 5
-            // +--+--+-+-+-+-+-+-+-+-+-+-+-+-+
-            // |M |M |M|M|M|C|M|M|M|C|M|M|M|M|
-            // |11|10|9|8|7|1|6|5|4|0|3|2|1|0|
-            // +--+--+-+-+-+-+-+-+-+-+-+-+-+-+
-            const class_number = @intCast(u14, @bitCast(u2, class));
-            const method_number = @intCast(u14, @bitCast(u12, method));
-            const result = (method_number & 0b1111) | ((class_number & 0b1) << 4) | ((method_number & 0b1110000) << 1) | ((class_number & 0b10) << 7) | ((method_number & 0b111110000000) << 2);
-
-            return Self{ .value = result };
-        }
-    };
-
-    pub const Header = packed struct {
-        const MAGIC_COOKIE = 0x2112A442; 
-        transaction_id: u96,
-        magic_cookie: u32 = MAGIC_COOKIE,
-        message_length: u16,
-        @"type": Type,
-    };
-
-    pub const Attribute = struct {
-        pub const Type = enum(u16) {
-            // Compression-required range (0x0000-0x7FFF)
-            mapped_address = 0x0002,
-            username = 0x0006,
-            message_integrity = 0x0008,
-            error_code = 0x0009,
-            unknown_attributes = 0x000A,
-            realm = 0x0014,
-            nonce = 0x0015,
-            message_integrity_sha256 = 0x001C,
-            password_algorithm = 0x001D,
-            userhash = 0x001E,
-            xor_mapped_address = 0x0020,
-            // Compression-optional range (0x8000-0xFFFF)
-            password_algorithms = 0x8002,
-            alternate_domain = 0x8003,
-            software = 0x8022,
-            alternate_server = 0x8023,
-            fingerprint = 0x8028,
-        };
-
-        pub const Header = packed struct {
-            length: u16,
-            @"type": Attribute.Type,
-        };
-
-        pub const MappedAddressIPv4 = packed struct {
-            address: u32,
-            port: u16,
-            family: u8 = 0x01,
-            _reserved0: u8 = 0,
-        };
-
-        pub const MappedAddressIPv6 = packed struct {
-            address: u128,
-            port: u16,
-            family: u8 = 0x02,
-            _reserved0: u8 = 0,
-        };
-
-        pub const XorMappedAddressIPv4 = packed struct {
-            x_address: u32,
-            x_port: u16,
-            family: u8 = 0x01,
-            _reserved0: u8 = 0,
-        };
-
-        pub const XorMappedAddressIPv6 = packed struct {
-            x_address: u128,
-            x_port: u16,
-            family: u8 = 0x02,
-            _reserved0: u8 = 0,
-        };
-    };
+pub const Request = struct {
+    header: message.Header,
+    attributes: []message.Attribute,
 };
 
-test "expect messageTypeFromClassAndMethod correctly generates message type" {
-    try std.testing.expect(Message.Type.fromClassAndMethod(Message.Class.request, Message.Method.binding).value == 0x0001);
-    try std.testing.expect(Message.Type.fromClassAndMethod(Message.Class.success_response, Message.Method.binding).value == 0x0101);
+pub fn sendRequest(request: Request, network_stream: std.net.Stream) !void {
+    var buffer: [576]u8 = undefined;
+
+    var stream = std.io.fixedBufferStream(&buffer);
+    var writer = stream.writer();
+
+    var message_length: u16 = 0;
+    for (request.attributes) |attribute| {
+        // Attribute header is 4 bytes (Type + length)
+        message_length += 4;
+        message_length += attribute.size();
+    }
+
+    _ = try writer.writeIntBig(u16, @as(u16, request.header.@"type".asRaw()));
+    _ = try writer.writeIntBig(u16, message_length);
+    _ = try writer.writeIntBig(u32, message.MAGIC_COOKIE);
+    _ = try writer.writeIntBig(u96, request.header.transaction_id);
+
+    for (request.attributes) |attribute| {
+        try attribute.write(writer);
+    }
+
+    const bytes_written = writer.context.getPos() catch unreachable;
+
+    var network_writer = network_stream.writer();
+    _ = try network_writer.write(buffer[0..bytes_written]);
+}
+
+pub const Response = struct {
+    const Self = @This();
+
+    header: message.Header,
+    attributes: []message.Attribute,
+
+    storage: []u8,
+
+    pub fn deinit(self: *const Self, allocator: std.mem.Allocator) void {
+        allocator.free(self.storage);
+    }
+};
+
+pub fn receiveResponse(allocator: std.mem.Allocator, network_stream: std.net.Stream) !Response {
+    const response_buffer: []u8 = blk: {
+        var buffer: [576]u8 = undefined;
+        const bytes_read = try network_stream.reader().read(&buffer);
+        break :blk buffer[0..bytes_read];
+    };
+
+    var response_stream = std.io.fixedBufferStream(response_buffer);
+    var response_reader = response_stream.reader();
+    var message_length: u16 = 0;
+    const header = blk: {
+        const raw_type: u16 = try response_reader.readIntBig(u16);
+        const raw_message_length: u16 = try response_reader.readIntBig(u16);
+        const raw_magic_cookie: u32 = try response_reader.readIntBig(u32);
+        const raw_transaction_id: u96 = try response_reader.readIntBig(u96);
+
+        if (raw_type & 0b1100000000000000 != 0x0) return error.NotAStunMessage;
+        if (raw_magic_cookie != message.MAGIC_COOKIE) return error.NotAStunMessage;
+
+        const raw_class = message.Class.extractRaw(@truncate(u14, raw_type));
+        const raw_method = message.Method.extractRaw(@truncate(u14, raw_type));
+
+        const class = std.meta.intToEnum(message.Class, raw_class) catch return error.InvalidClass;
+        const method = std.meta.intToEnum(message.Method, raw_method) catch return error.InvalidMethod;
+
+        // TODO(Corentin): not optimal
+        message_length = raw_message_length;
+        break :blk message.Header{
+            .@"type" = message.Type{ .class = class, .method = method },
+            .transaction_id = raw_transaction_id,
+        };
+    };
+
+    var storage: []u8 = try allocator.alloc(u8, 1024);
+    errdefer allocator.free(storage);
+
+    var storage_allocator = std.heap.FixedBufferAllocator.init(storage);
+
+    var attributes = try storage_allocator.allocator().alloc(message.Attribute, 16);
+
+    const response_body = response_buffer[20..(20 + message_length)];
+    var stream = std.io.fixedBufferStream(response_body);
+    var reader = stream.reader();
+
+    var current_attribute_index: u8 = 0;
+    while (true) : (current_attribute_index += 1) {
+        attributes[current_attribute_index] = message.Attribute.read(storage_allocator.allocator(), reader, header.transaction_id) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return err,
+        };
+    }
+
+    return Response{
+        .header = header,
+        .attributes = attributes[0..current_attribute_index],
+        .storage = storage,
+    };
 }
