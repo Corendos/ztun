@@ -1,5 +1,5 @@
 const std = @import("std");
-const MAGIC_COOKIE = @import("message.zig").MAGIC_COOKIE;
+const MAGIC_COOKIE = @import("main.zig").MAGIC_COOKIE;
 
 pub const IPFamily = enum(u8) {
     v4 = 0x01,
@@ -81,6 +81,35 @@ pub const MappedAddress = struct {
         const address = try readAddress(reader, family);
 
         return Self{ .port = port, .address = address };
+    }
+
+    pub fn write(self: *const Self, writer: anytype) !void {
+        try writer.writeIntBig(u8, 0);
+        try writer.writeIntBig(u8, @enumToInt(self.address));
+        try writer.writeIntBig(u16, self.port);
+        switch (self.address) {
+            .v4 => |address| {
+                try writer.writeIntBig(u8, address[0]);
+                try writer.writeIntBig(u8, address[1]);
+                try writer.writeIntBig(u8, address[2]);
+                try writer.writeIntBig(u8, address[3]);
+            },
+            .v6 => unreachable,
+        }
+    }
+
+    pub fn getSize(self: *const Self) usize {
+        return switch (self.address) {
+            .v4 => 8,
+            .v6 => 20,
+        };
+    }
+
+    pub fn getPaddedSize(self: *const Self) usize {
+        return switch (self.address) {
+            .v4 => 8,
+            .v6 => 20,
+        };
     }
 };
 
@@ -194,12 +223,27 @@ pub const OtherAddress = struct {
 pub const Software = struct {
     const Self = @This();
 
-    value: []u8,
+    value: []const u8,
 
     pub fn format(value: Self, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
         _ = fmt;
         _ = options;
         _ = value;
         try writer.print("\"{s}\"", .{value.value});
+    }
+
+    pub fn write(self: *const Self, writer: anytype) !void {
+        _ = try writer.write(self.value);
+        const padding_size = std.mem.alignForward(self.value.len, 4) - self.value.len;
+        const pad_values = [_]u8{0, 0, 0, 0};
+        _ = try writer.write(pad_values[0..padding_size]);
+    }
+
+    pub fn getSize(self: *const Self) usize {
+        return self.value.len;
+    }
+
+    pub fn getPaddedSize(self: *const Self) usize {
+        return std.mem.alignForward(self.value.len, 4);
     }
 };

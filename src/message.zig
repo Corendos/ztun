@@ -1,8 +1,9 @@
 const std = @import("std");
+const ztun = @import("main.zig");
 
-pub const MAGIC_COOKIE = 0x2112A442;
+const MAGIC_COOKIE = ztun.MAGIC_COOKIE;
 
-pub const attributes = @import("attributes.zig");
+const Self = @This();
 
 pub const Class = enum(u2) {
     request = 0b00,
@@ -51,13 +52,26 @@ pub const Type = struct {
 
 pub const Header = struct {
     @"type": Type,
+    message_length: u16,
     transaction_id: u96,
 
     const Self = @This();
 };
 
+pub const AttributeHeader = struct {
+    raw_type: u16,
+    length: u16,
+
+    pub fn read(reader: anytype) !AttributeHeader {
+        return AttributeHeader{
+            .raw_type = try reader.readIntBig(u16),
+            .length = try reader.readIntBig(u16),
+        };
+    }
+};
+
 pub const AttributeType = enum(u16) {
-    // Compression-required range (0x0000-0x7FFF)
+    // Comprehension-required range (0x0000-0x7FFF)
     mapped_address = 0x0001,
     change_request = 0x0003,
     username = 0x0006,
@@ -71,7 +85,7 @@ pub const AttributeType = enum(u16) {
     userhash = 0x001E,
     xor_mapped_address = 0x0020,
     padding = 0x0027,
-    // Compression-optional range (0x8000-0xFFFF)
+    // Comprehension-optional range (0x8000-0xFFFF)
     password_algorithms = 0x8002,
     alternate_domain = 0x8003,
     software = 0x8022,
@@ -79,10 +93,19 @@ pub const AttributeType = enum(u16) {
     fingerprint = 0x8028,
     response_origin = 0x802b,
     other_address = 0x802c,
+
+    pub fn fromRaw(raw_type: u16) ?AttributeType {
+        return std.meta.intToEnum(AttributeType, raw_type) catch null;
+    }
+};
+
+pub const AttributeOrUnknown = union(enum) {
+    attribute: Attribute,
+    unknown: u16,
 };
 
 pub const Attribute = union(AttributeType) {
-    mapped_address: attributes.MappedAddress,
+    mapped_address: ztun.attributes.MappedAddress,
     change_request: void,
     username: void,
     message_integrity: void,
@@ -93,59 +116,229 @@ pub const Attribute = union(AttributeType) {
     message_integrity_sha256: void,
     password_algorithm: void,
     userhash: void,
-    xor_mapped_address: attributes.XorMappedAddress,
+    xor_mapped_address: ztun.attributes.XorMappedAddress,
     padding: void,
     password_algorithms: void,
     alternate_domain: void,
-    software: attributes.Software,
+    software: ztun.attributes.Software,
     alternate_server: void,
     fingerprint: void,
-    response_origin: attributes.ResponseOrigin,
-    other_address: attributes.OtherAddress,
+    response_origin: ztun.attributes.ResponseOrigin,
+    other_address: ztun.attributes.OtherAddress,
 
-    pub fn read(allocator: std.mem.Allocator, reader: anytype, transaction_id: u96) !Attribute {
-        const raw_buffer = try reader.readBytesNoEof(4);
-        const attribute_type_number = std.mem.readIntBig(u16, raw_buffer[0..2]);
-        const length = std.mem.readIntBig(u16, raw_buffer[2..4]);
-
-        const attribute_type = std.meta.intToEnum(AttributeType, attribute_type_number) catch {
-            return error.InvalidType;
+    pub fn readAlloc(allocator: std.mem.Allocator, reader: anytype, transaction_id: u96) !Attribute {
+        return switch (tryReadAlloc(allocator, reader, transaction_id)) {
+            .attribute => |attribute| attribute,
+            .unknown => error.InvalidType,
         };
+    }
 
-        const aligned_length = std.mem.alignForward(length, 4);
+    pub fn tryReadAlloc(allocator: std.mem.Allocator, reader: anytype, transaction_id: u96) !AttributeOrUnknown {
+        _ = allocator;
+        const header = try AttributeHeader.read(reader);
+        const aligned_length = std.mem.alignForward(header.length, 4);
 
-        return switch (attribute_type) {
-            AttributeType.mapped_address => Attribute{ .mapped_address = try attributes.MappedAddress.read(reader) },
-            AttributeType.xor_mapped_address => Attribute{ .xor_mapped_address = try attributes.XorMappedAddress.read(reader, transaction_id) },
-            AttributeType.software => blk: {
-                const current_pos = reader.context.getPos() catch unreachable;
-                const end_pos = current_pos + length;
-                const value = try allocator.dupe(u8, reader.context.buffer[current_pos..end_pos]);
-                try reader.skipBytes(aligned_length, .{});
-                break :blk Attribute{ .software = attributes.Software{ .value = value } };
-            },
-            AttributeType.unknown_attributes => blk: {
-                try reader.skipBytes(aligned_length, .{});
-                break :blk Attribute{ .unknown_attributes = {} };
-            },
-            AttributeType.response_origin => Attribute{ .response_origin = try attributes.ResponseOrigin.read(reader) },
-            AttributeType.other_address => Attribute{ .other_address = try attributes.OtherAddress.read(reader) },
-            else => error.UnsupportedAttribute,
-        };
+        if (AttributeType.fromRaw(header.raw_type)) |attribute_type| {
+            const attribute = switch (attribute_type) {
+                AttributeType.mapped_address => Attribute{ .mapped_address = try ztun.attributes.MappedAddress.read(reader) },
+                AttributeType.xor_mapped_address => Attribute{ .xor_mapped_address = try ztun.attributes.XorMappedAddress.read(reader, transaction_id) },
+                AttributeType.software => blk: {
+                    const current_pos = reader.context.getPos() catch unreachable;
+                    const end_pos = current_pos + header.length;
+                    const value = try allocator.dupe(u8, reader.context.buffer[current_pos..end_pos]);
+                    errdefer allocator.free(value);
+                    try reader.skipBytes(aligned_length, .{});
+                    break :blk Attribute{ .software = ztun.attributes.Software{ .value = value } };
+                },
+                AttributeType.unknown_attributes => blk: {
+                    try reader.skipBytes(aligned_length, .{});
+                    break :blk Attribute{ .unknown_attributes = {} };
+                },
+                AttributeType.response_origin => Attribute{ .response_origin = try ztun.attributes.ResponseOrigin.read(reader) },
+                AttributeType.other_address => Attribute{ .other_address = try ztun.attributes.OtherAddress.read(reader) },
+                else => return AttributeOrUnknown{ .unknown = header.raw_type },
+            };
+
+            return AttributeOrUnknown{ .attribute = attribute };
+        }
+
+        try reader.skipBytes(aligned_length, .{});
+        return AttributeOrUnknown{ .unknown = header.raw_type };
     }
 
     pub fn write(self: Attribute, writer: anytype) !void {
-        _ = self;
-        _ = writer;
-        unreachable;
+        try writer.writeIntBig(u16, @intCast(u16, @enumToInt(self)));
+        try writer.writeIntBig(u16, @intCast(u16, self.getSize()));
+        switch (self) {
+            AttributeType.mapped_address => |e| try e.write(writer),
+            AttributeType.software => |e| try e.write(writer),
+            else => unreachable,
+        }
     }
 
-    pub fn size(self: Attribute) u16 {
+    pub fn getSize(self: Attribute) usize {
         return switch (self) {
+            AttributeType.mapped_address => |e| e.getSize(),
+            AttributeType.software => |e| e.getSize(),
             else => 0,
         };
     }
+
+    pub fn getPaddedSize(self: Attribute) usize {
+        return switch (self) {
+            AttributeType.mapped_address => |e| e.getPaddedSize(),
+            AttributeType.software => |e| e.getPaddedSize(),
+            else => 0,
+        };
+    }
+
+    pub fn deinit(self: *const Attribute, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            Attribute.software => |element| {
+                allocator.free(element.value);
+            },
+            else => {},
+        }
+    }
 };
+
+header: Header,
+attributes: []Attribute,
+
+pub fn deinit(self: *const Self, allocator: std.mem.Allocator) void {
+    for (self.attributes) |attribute| {
+        attribute.deinit(allocator);
+    }
+    allocator.free(self.attributes);
+}
+
+pub fn write(self: *const Self, writer: anytype) !usize {
+    _ = try writer.writeIntBig(u16, @as(u16, self.header.@"type".asRaw()));
+    _ = try writer.writeIntBig(u16, self.header.message_length);
+    _ = try writer.writeIntBig(u32, MAGIC_COOKIE);
+    _ = try writer.writeIntBig(u96, self.header.transaction_id);
+
+    for (self.attributes) |attribute| {
+        try attribute.write(writer);
+    }
+
+    return writer.context.getPos() catch unreachable;
+}
+
+pub fn getBodySize(self: *const Self) usize {
+    var body_size: usize = 0;
+    for (self.attributes) |attribute| {
+        body_size += 4 + attribute.getPaddedSize();
+    }
+
+    return body_size;
+}
+
+pub fn send(self: *const Self, network_stream: std.net.Stream) !void {
+    var buffer: [576]u8 = undefined;
+
+    var stream = std.io.fixedBufferStream(&buffer);
+    var writer = stream.writer();
+
+    const bytes_written = try self.write(writer);
+    var network_writer = network_stream.writer();
+    _ = try network_writer.write(buffer[0..bytes_written]);
+}
+
+pub const ReadResult = union(enum) {
+    success: Self,
+    errors: []u16,
+
+    pub fn deinit(self: *const ReadResult, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .success => |message| {
+                message.deinit(allocator);
+            },
+            .errors => |errors| {
+                allocator.free(errors);
+            },
+        }
+    }
+};
+
+pub fn readAlloc(allocator: std.mem.Allocator, reader: anytype) !ReadResult {
+    const header = blk: {
+        const raw_type: u16 = try reader.readIntBig(u16);
+        const raw_message_length: u16 = try reader.readIntBig(u16);
+        const raw_magic_cookie: u32 = try reader.readIntBig(u32);
+        const raw_transaction_id: u96 = try reader.readIntBig(u96);
+
+        if (raw_type & 0b1100000000000000 != 0x0) return error.NotAStunMessage;
+        if (raw_magic_cookie != MAGIC_COOKIE) return error.NotAStunMessage;
+
+        const raw_class = Class.extractRaw(@truncate(u14, raw_type));
+        const raw_method = Method.extractRaw(@truncate(u14, raw_type));
+
+        const class = std.meta.intToEnum(Class, raw_class) catch return error.InvalidClass;
+        const method = std.meta.intToEnum(Method, raw_method) catch return error.InvalidMethod;
+
+        break :blk Header{
+            .@"type" = Type{ .class = class, .method = method },
+            .message_length = raw_message_length,
+            .transaction_id = raw_transaction_id,
+        };
+    };
+
+    var body_buffer: [556]u8 = undefined;
+    const read_message_length = try reader.read(&body_buffer);
+    // TODO(Corentin): Should we do something if read_message_length != header.message_length ?
+    _ = read_message_length;
+
+    // TODO(Corentin): parse the message once to get the number of attributes
+    var attributes = try std.ArrayList(Attribute).initCapacity(allocator, 16);
+    defer attributes.deinit();
+
+    var unknown_attributes = try std.ArrayList(u16).initCapacity(allocator, 16);
+    defer unknown_attributes.deinit();
+
+    var body_stream = std.io.fixedBufferStream(body_buffer[0..read_message_length]);
+    var body_reader = body_stream.reader();
+
+    while (Attribute.tryReadAlloc(allocator, body_reader, header.transaction_id)) |attribute_or_unknown| switch (attribute_or_unknown) {
+        .attribute => |attribute| {
+            std.log.debug("Got attribute {s}", .{attribute});
+            const new_attribute = try attributes.addOne();
+            new_attribute.* = attribute;
+        },
+        .unknown => |raw_attribute_value| {
+            std.log.debug("Got unknown {}", .{raw_attribute_value});
+            const new_unknown_attribute = try unknown_attributes.addOne();
+            new_unknown_attribute.* = raw_attribute_value;
+        },
+    } else |err| switch (err) {
+        error.EndOfStream => {},
+        else => return err,
+    }
+
+    if (unknown_attributes.items.len != 0) {
+        return ReadResult{ .errors = unknown_attributes.toOwnedSlice() };
+    }
+
+    return ReadResult{
+        .success = Self{
+            .header = header,
+            .attributes = attributes.toOwnedSlice(),
+        },
+    };
+}
+
+pub fn receiveAlloc(allocator: std.mem.Allocator, network_stream: std.net.Stream) !ReadResult {
+    const response_buffer: []u8 = blk: {
+        var buffer: [576]u8 = undefined;
+        const bytes_read = try network_stream.reader().read(&buffer);
+        break :blk buffer[0..bytes_read];
+    };
+
+    var response_stream = std.io.fixedBufferStream(response_buffer);
+    var response_reader = response_stream.reader();
+
+    return try readAlloc(allocator, response_reader);
+}
 
 test "message type generation and message class and method extraction" {
     const message_type1 = Type{ .class = Class.request, .method = Method.binding };
