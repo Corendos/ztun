@@ -3,12 +3,6 @@
 
 const std = @import("std");
 
-const version = std.SemanticVersion{
-    .major = 0,
-    .minor = 0,
-    .patch = 2,
-};
-
 pub fn build(b: *std.build.Builder) void {
     // Standard release options allow the person running `zig build` to select
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
@@ -20,14 +14,22 @@ pub fn build(b: *std.build.Builder) void {
     lib.setTarget(target);
     lib.install();
 
-    const executable = b.addExecutable("main", "src/main.zig");
-    executable.setBuildMode(mode);
-    executable.setTarget(target);
-    executable.install();
+    const ztun_package = std.build.Pkg{
+        .name = "ztun",
+        .source = .{ .path = "src/ztun.zig" },
+    };
 
-    const exe_options = b.addOptions();
-    executable.addOptions("build_options", exe_options);
-    exe_options.addOption(std.SemanticVersion, "version", version);
+    const server_sample_executable = b.addExecutable("server", "samples/server.zig");
+    server_sample_executable.addPackage(ztun_package);
+    server_sample_executable.setBuildMode(mode);
+    server_sample_executable.setTarget(target);
+    server_sample_executable.install();
+
+    const client_sample_executable = b.addExecutable("client", "samples/client.zig");
+    client_sample_executable.addPackage(ztun_package);
+    client_sample_executable.setBuildMode(mode);
+    client_sample_executable.setTarget(target);
+    client_sample_executable.install();
 
     const ztun_tests = b.addTest("src/ztun.zig");
     ztun_tests.setBuildMode(mode);
@@ -35,9 +37,15 @@ pub fn build(b: *std.build.Builder) void {
     const test_step = b.step("test", "Run library tests");
     test_step.dependOn(&ztun_tests.step);
 
-    const exe_run_step = executable.run();
-    exe_run_step.step.dependOn(b.getInstallStep());
+    const server_sample_executable_run = server_sample_executable.run();
+    server_sample_executable_run.step.dependOn(b.getInstallStep());
 
-    const run_step = b.step("run", "Run main program");
-    run_step.dependOn(&exe_run_step.step);
+    const client_sample_executable_run = client_sample_executable.run();
+    client_sample_executable_run.step.dependOn(b.getInstallStep());
+
+    const server_sample_run_step = b.step("run_server", "Run server sample");
+    server_sample_run_step.dependOn(&server_sample_executable_run.step);
+
+    const client_sample_run_step = b.step("run_client", "Run client sample");
+    client_sample_run_step.dependOn(&client_sample_executable_run.step);
 }
