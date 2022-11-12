@@ -50,22 +50,42 @@ pub const Ipv4Address = struct {
         }
         if (index == 3 and saw_any_digits) {
             out_ptr[index] = x;
-            result.value = @bitCast(u32, out_ptr);
+            result.value = std.mem.bigToNative(u32, @bitCast(u32, out_ptr));
             return result;
         }
 
         return error.Incomplete;
+    }
+
+    pub fn format(self: Ipv4Address, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+        _ = options;
+        _ = fmt;
+        const raw = @bitCast([4]u8, std.mem.nativeToBig(u32, self.value));
+        try writer.print("{}.{}.{}.{}:{}", .{ raw[0], raw[1], raw[2], raw[3], self.port });
     }
 };
 
 pub const Ipv6Address = struct {
     value: u128,
     port: u16,
+
+    pub fn format(self: Ipv6Address, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+        _ = writer;
+        _ = self;
+        _ = options;
+        _ = fmt;
+    }
 };
 
 pub const Address = union(enum) {
     ipv4: Ipv4Address,
     ipv6: Ipv6Address,
+
+    pub fn format(self: Address, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+        return switch (self) {
+            inline else => |address| address.format(fmt, options, writer),
+        };
+    }
 };
 
 test "parse IPv4" {

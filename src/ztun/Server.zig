@@ -5,7 +5,6 @@ const std = @import("std");
 const Self = @This();
 
 const attr = @import("attributes.zig");
-const des = @import("deserialization.zig");
 const net = @import("net.zig");
 
 const Method = @import("lib.zig").Method;
@@ -21,6 +20,7 @@ const AgentContext = struct {};
 
 pub const Error = error{
     MethodNotAllowedForClass,
+    InvalidFingerprint,
     UnknownTransaction,
     UnexpectedError,
     Discard,
@@ -49,8 +49,18 @@ fn isMethodAllowedForClass(method: Method, class: Class) bool {
     };
 }
 
-pub fn processMessage(server: Self, allocator: std.mem.Allocator, message: des.DeserializedMessage, source: net.Address) Error!?Message {
+pub fn processMessage(server: Self, allocator: std.mem.Allocator, message: Message, source: net.Address) Error!?Message {
     if (!isMethodAllowedForClass(message.@"type".method, message.@"type".class)) return error.MethodNotAllowedForClass;
+
+    var has_fingerprint: bool = false;
+    for (message.attributes) |a, i| {
+        if (a == .known and a.known == .fingerprint) {
+            has_fingerprint = true;
+            if (i != message.attributes.len - 1) return error.InvalidFingerprint;
+        }
+    }
+
+    if (has_fingerprint) {}
 
     switch (message.@"type".class) {
         .error_response, .success_response => {
@@ -76,15 +86,15 @@ pub fn processMessage(server: Self, allocator: std.mem.Allocator, message: des.D
     return response;
 }
 
-pub fn handleRequest(server: Self, allocator: std.mem.Allocator, message: des.DeserializedMessage, source: net.Address) Error!Message {
+pub fn handleRequest(server: Self, allocator: std.mem.Allocator, message: Message, source: net.Address) Error!Message {
     std.log.info("Received {s} request from {any}", .{ @tagName(message.type.method), source });
     _ = server;
     var comprehension_required_unknown_attributes = std.ArrayList(u16).initCapacity(allocator, message.attributes.len) catch return error.UnexpectedError;
     defer comprehension_required_unknown_attributes.deinit();
     for (message.attributes) |a| switch (a) {
-        .unknown => |unknown_attribute| {
-            if (attr.isComprehensionRequiredAttribute(unknown_attribute.value)) {
-                comprehension_required_unknown_attributes.appendAssumeCapacity(unknown_attribute.value);
+        .raw => |raw_attribute| {
+            if (attr.isComprehensionRequiredAttribute(raw_attribute.value)) {
+                comprehension_required_unknown_attributes.appendAssumeCapacity(raw_attribute.value);
             }
         },
         else => {},
@@ -102,12 +112,12 @@ pub fn handleRequest(server: Self, allocator: std.mem.Allocator, message: des.De
                 .reason = "Unknown comprehension-required attributes",
             },
         };
-        message_builder.addAttribute(error_code_attribute) catch return error.UnexpectedError;
+        message_builder.addKnownAttribute(error_code_attribute) catch return error.UnexpectedError;
         const unknown_attributes = attr.Attribute{
             .unknown_attributes = attr.UnknownAttribute{ .attribute_types = comprehension_required_unknown_attributes.toOwnedSlice() },
         };
-        message_builder.addAttribute(unknown_attributes) catch return error.UnexpectedError;
-        message_builder.addAttribute(version_attribute) catch return error.UnexpectedError;
+        message_builder.addKnownAttribute(unknown_attributes) catch return error.UnexpectedError;
+        message_builder.addKnownAttribute(version_attribute) catch return error.UnexpectedError;
         return message_builder.build() catch return error.UnexpectedError;
     }
 
@@ -121,18 +131,18 @@ pub fn handleRequest(server: Self, allocator: std.mem.Allocator, message: des.De
             message.transaction_id,
         ),
     };
-    message_builder.addAttribute(xor_mapped_address_attribute) catch return error.UnexpectedError;
-    message_builder.addAttribute(version_attribute) catch return error.UnexpectedError;
+    message_builder.addKnownAttribute(xor_mapped_address_attribute) catch return error.UnexpectedError;
+    message_builder.addKnownAttribute(version_attribute) catch return error.UnexpectedError;
     return message_builder.build() catch return error.UnexpectedError;
 }
 
-pub fn handleIndication(server: Self, allocator: std.mem.Allocator, message: des.DeserializedMessage) Error!void {
+pub fn handleIndication(server: Self, allocator: std.mem.Allocator, message: Message) Error!void {
     _ = message;
     _ = allocator;
     _ = server;
 }
 
-pub fn handleResponse(server: Self, allocator: std.mem.Allocator, message: des.DeserializedMessage, success: bool) Error!void {
+pub fn handleResponse(server: Self, allocator: std.mem.Allocator, message: Message, success: bool) Error!void {
     _ = message;
     _ = allocator;
     _ = success;
@@ -141,7 +151,7 @@ pub fn handleResponse(server: Self, allocator: std.mem.Allocator, message: des.D
 
 pub fn processRawMessage(self: Self, allocator: std.mem.Allocator, bytes: []const u8, source: net.Address) ?[]const u8 {
     var input_stream = std.io.fixedBufferStream(bytes);
-    const message = des.deserialize(input_stream.reader(), allocator) catch |err| {
+    const message = Message.deserialize(input_stream.reader(), allocator) catch |err| {
         std.log.err("{any}", .{err});
         return null;
     };

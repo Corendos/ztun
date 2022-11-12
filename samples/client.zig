@@ -17,7 +17,7 @@ pub fn createSocket() !i32 {
 pub fn sendTo(socket: i32, bytes: []const u8, address: ztun.net.Address) !void {
     if (address == .ipv6) @panic("Not implemented");
     var raw_address = std.net.Address{
-        .in = std.net.Ip4Address.init(@bitCast([4]u8, address.ipv4.value), address.ipv4.port),
+        .in = std.net.Ip4Address.init(@bitCast([4]u8, std.mem.nativeToBig(u32, address.ipv4.value)), address.ipv4.port),
     };
     const result = linux.sendto(socket, bytes.ptr, bytes.len, 0, &raw_address.any, raw_address.getOsSockLen());
     if (linux.getErrno(result) != linux.E.SUCCESS) return error.SendFailed;
@@ -64,8 +64,7 @@ pub fn main() anyerror!void {
     const raw_message = try receive(socket, buffer);
     const message = blk: {
         var stream = std.io.fixedBufferStream(raw_message);
-        const deserialized_message = try ztun.deserialization.deserialize(stream.reader(), scratch_allocator_state.allocator());
-        break :blk try deserialized_message.toMessage(scratch_allocator_state.allocator());
+        break :blk try ztun.Message.deserialize(stream.reader(), scratch_allocator_state.allocator());
     };
     std.log.debug("{any}", .{message});
 }

@@ -17,7 +17,7 @@ pub fn createSocket() !i32 {
 pub fn bindSocket(socket: i32, address: ztun.net.Address) !void {
     if (address == .ipv6) @panic("Not implemented");
     var raw_address = std.net.Address{
-        .in = std.net.Ip4Address.init(@bitCast([4]u8, address.ipv4.value), address.ipv4.port),
+        .in = std.net.Ip4Address.init(@bitCast([4]u8, std.mem.nativeToBig(u32, address.ipv4.value)), address.ipv4.port),
     };
     var result = linux.bind(socket, &raw_address.any, raw_address.getOsSockLen());
     if (linux.getErrno(result) != linux.E.SUCCESS) {
@@ -29,7 +29,7 @@ pub fn bindSocket(socket: i32, address: ztun.net.Address) !void {
 pub fn sendTo(socket: i32, bytes: []const u8, address: ztun.net.Address) !void {
     if (address == .ipv6) @panic("Not implemented");
     var raw_address = std.net.Address{
-        .in = std.net.Ip4Address.init(@bitCast([4]u8, address.ipv4.value), address.ipv4.port),
+        .in = std.net.Ip4Address.init(@bitCast([4]u8, std.mem.nativeToBig(u32, address.ipv4.value)), address.ipv4.port),
     };
     const result = linux.sendto(socket, bytes.ptr, bytes.len, 0, &raw_address.any, raw_address.getOsSockLen());
     if (linux.getErrno(result) != linux.E.SUCCESS) {
@@ -52,7 +52,7 @@ pub fn receiveFrom(socket: i32, buf: []u8) !Message {
 
     const address = ztun.net.Address{
         .ipv4 = ztun.net.Ipv4Address{
-            .value = raw_address.in.sa.addr,
+            .value = std.mem.bigToNative(u32, raw_address.in.sa.addr),
             .port = raw_address.in.getPort(),
         },
     };

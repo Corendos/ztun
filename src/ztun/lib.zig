@@ -3,9 +3,11 @@
 
 const std = @import("std");
 
-const Attribute = @import("attributes.zig").Attribute;
+const KnownAttribute = @import("attributes.zig").Attribute;
+const AttributeType = @import("attributes.zig").AttributeType;
 const magic_cookie = @import("constants.zig").magic_cookie;
 const fingerprint_magic = @import("constants.zig").fingerprint_magic;
+const io = @import("io.zig");
 
 pub const Method = enum(u12) {
     binding = 0b000000000001,
@@ -53,6 +55,63 @@ pub const MessageType = struct {
     }
 };
 
+pub const RawAttribute = struct {
+    value: u16,
+    length: u16,
+    data: []const u8,
+
+    pub fn size(self: *const RawAttribute) usize {
+        const raw_size: usize = 4 + self.length;
+        return std.mem.alignForward(raw_size, 4);
+    }
+
+    pub fn deinit(self: *const RawAttribute, allocator: std.mem.Allocator) void {
+        allocator.free(self.data);
+    }
+
+    pub fn serialize(self: *const RawAttribute, writer: anytype) !void {
+        try writer.writeIntBig(u16, self.value);
+        try writer.writeIntBig(u16, self.length);
+        try io.writeAllAligned(self.data, 4, writer);
+    }
+};
+
+pub const Attribute = union(enum) {
+    raw: RawAttribute,
+    known: KnownAttribute,
+
+    pub fn size(self: *const Attribute) usize {
+        return switch (self.*) {
+            inline else => |a| a.size(),
+        };
+    }
+
+    pub fn deinit(self: *const Attribute, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .raw => |value| value.deinit(allocator),
+            .known => |value| value.deinit(allocator),
+        }
+    }
+
+    pub fn serialize(self: *const Attribute, writer: anytype) !void {
+        return switch (self.*) {
+            .raw => |value| value.serialize(writer),
+            .known => |value| value.serialize(writer),
+        };
+    }
+};
+
+pub const DeserializationError = error{
+    OutOfMemory,
+    EndOfStream,
+    NotImplemented,
+    NonZeroStartingBits,
+    WrongMagicCookie,
+    UnsupportedMethod,
+    UnknownAttribute,
+    InvalidAttributeFormat,
+};
+
 pub const Message = struct {
     const Self = @This();
 
@@ -66,12 +125,20 @@ pub const Message = struct {
         for (attributes) |attribute| {
             length += @truncate(u16, attribute.size());
         }
+
         return Message{
             .type = MessageType{ .class = class, .method = method },
             .transaction_id = transaction_id,
             .length = length,
             .attributes = attributes,
         };
+    }
+
+    pub fn deinit(self: *const Self, allocator: std.mem.Allocator) void {
+        for (self.attributes) |a| {
+            a.deinit(allocator);
+        }
+        allocator.free(self.attributes);
     }
 
     fn writeHeader(self: *const Self, writer: anytype) !void {
@@ -90,6 +157,82 @@ pub const Message = struct {
     pub fn serialize(self: *const Self, writer: anytype) !void {
         try self.writeHeader(writer);
         try self.writeAttributes(writer);
+    }
+
+    pub fn computeFingerprint(self: *const Self, allocator: std.mem.Allocator) !u32 {
+        var buffer = try allocator.alloc(u8, 2048);
+        defer allocator.free(buffer);
+
+        var message = self.*;
+        // Take fingerprint into account
+        message.length += 8;
+        var stream = std.io.fixedBufferStream(buffer);
+        message.serialize(stream.writer()) catch unreachable;
+        return std.hash.Crc32.hash(stream.getWritten()) ^ @as(u32, fingerprint_magic);
+    }
+
+    fn readMessageType(reader: anytype) DeserializationError!MessageType {
+        const raw_message_type: u16 = try reader.readIntBig(u16);
+        if (raw_message_type & 0b1100_0000_0000_0000 != 0) {
+            return error.NonZeroStartingBits;
+        }
+        return MessageType.tryFromInteger(@truncate(u14, raw_message_type)) orelse error.UnsupportedMethod;
+    }
+
+    fn readKnownAttribute(reader: anytype, attribute_type: AttributeType, length: u16, allocator: std.mem.Allocator) !KnownAttribute {
+        return switch (attribute_type) {
+            inline else => |tag| blk: {
+                const Type = std.meta.TagPayload(KnownAttribute, tag);
+                break :blk @unionInit(KnownAttribute, @tagName(tag), try Type.deserializeAlloc(reader, length, allocator));
+            },
+        };
+    }
+
+    pub fn deserialize(reader: anytype, allocator: std.mem.Allocator) DeserializationError!Message {
+        var attribute_list = std.ArrayList(Attribute).init(allocator);
+        defer {
+            for (attribute_list.items) |a| {
+                a.deinit(allocator);
+            }
+            attribute_list.deinit();
+        }
+
+        const message_type = try readMessageType(reader);
+        const message_length = try reader.readIntBig(u16);
+        const message_magic = try reader.readIntBig(u32);
+        if (message_magic != magic_cookie) return error.WrongMagicCookie;
+        const transaction_id = try reader.readIntBig(u96);
+
+        var attribute_reader_state = std.io.countingReader(reader);
+        while (attribute_reader_state.bytes_read < message_length) {
+            const raw_attribute_type = try attribute_reader_state.reader().readIntBig(u16);
+            const attribute_length = try attribute_reader_state.reader().readIntBig(u16);
+
+            // TODO(Corentin): Might be useful to keep the original message, or at least some way to reconstruct it for fingerprint
+            //                 check purposes.
+            if (std.meta.intToEnum(AttributeType, raw_attribute_type)) |attribute_type| {
+                const attribute = try readKnownAttribute(attribute_reader_state.reader(), attribute_type, attribute_length, allocator);
+                try attribute_list.append(Attribute{ .known = attribute });
+            } else |_| {
+                const data = try allocator.alloc(u8, attribute_length);
+                errdefer allocator.free(data);
+                try io.readNoEofAligned(attribute_reader_state.reader(), 4, data);
+                try attribute_list.append(Attribute{
+                    .raw = RawAttribute{
+                        .value = raw_attribute_type,
+                        .length = attribute_length,
+                        .data = data,
+                    },
+                });
+            }
+        }
+
+        return Message{
+            .type = message_type,
+            .transaction_id = transaction_id,
+            .length = message_length,
+            .attributes = attribute_list.toOwnedSlice(),
+        };
     }
 };
 
@@ -146,35 +289,32 @@ pub const MessageBuilder = struct {
     }
 
     pub fn addAttribute(self: *Self, attribute: Attribute) !void {
-        switch (attribute) {
+        try self.attribute_list.append(attribute);
+    }
+
+    pub fn addKnownAttribute(self: *Self, known_attribute: KnownAttribute) !void {
+        switch (known_attribute) {
             .fingerprint, .message_integrity, .message_integrity_sha256 => return error.InvalidAttribute,
-            else => {
-                try self.attribute_list.append(attribute);
-            },
+            else => try self.addAttribute(Attribute{ .known = known_attribute }),
         }
+    }
+
+    pub fn addRawAttribute(self: *Self, raw_attribute: RawAttribute) !void {
+        return self.addAttribute(Attribute{ .unknown = raw_attribute });
     }
 
     fn isValid(self: *const Self) bool {
         return self.class != null and self.method != null and self.transaction_id != null;
     }
 
-    fn computeFingerprint(self: *const Self) u32 {
-        var buffer: [2048]u8 = undefined;
-
-        var message = Message.fromParts(self.class.?, self.method.?, self.transaction_id.?, self.attribute_list.items);
-        // Take fingerprint into account
-        message.length += 8;
-        var stream = std.io.fixedBufferStream(&buffer);
-        message.serialize(stream.writer()) catch unreachable;
-        return std.hash.Crc32.hash(stream.getWritten());
-    }
-
     pub fn build(self: *Self) !Message {
         if (!self.isValid()) return error.InvalidMessage;
         if (self.has_fingerprint) {
-            const hash = self.computeFingerprint();
-            const fingerprint = hash ^ @as(u32, fingerprint_magic);
-            try self.attribute_list.append(@unionInit(Attribute, "fingerprint", .{ .value = fingerprint }));
+            var buffer: [2048]u8 = undefined;
+            var arena_state = std.heap.FixedBufferAllocator.init(&buffer);
+            const fingerprint = Message.fromParts(self.class.?, self.method.?, self.transaction_id.?, self.attribute_list.items).computeFingerprint(arena_state.allocator()) catch unreachable;
+            const attribute = Attribute{ .known = @unionInit(KnownAttribute, "fingerprint", .{ .value = fingerprint }) };
+            try self.attribute_list.append(attribute);
         }
 
         return Message.fromParts(self.class.?, self.method.?, self.transaction_id.?, self.attribute_list.toOwnedSlice());
@@ -259,8 +399,6 @@ test "integer to message type" {
 }
 
 test "Message fingeprint" {
-    const AttributeType = @import("attributes.zig").AttributeType;
-
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
 
@@ -275,6 +413,43 @@ test "Message fingeprint" {
         break :blk try message_builder.build();
     };
     try std.testing.expectEqual(message.attributes.len, 1);
-    try std.testing.expect(message.attributes[0] == AttributeType.fingerprint);
-    try std.testing.expectEqual(@as(u32, 0x5b0ff6fc), message.attributes[0].fingerprint.value);
+    try std.testing.expect(message.attributes[0] == .known);
+    try std.testing.expect(message.attributes[0].known == AttributeType.fingerprint);
+    try std.testing.expectEqual(@as(u32, 0x5b0ff6fc), message.attributes[0].known.fingerprint.value);
+}
+
+test "try to deserialize a message" {
+    const bytes = [_]u8{
+        // Type
+        0x00, 0x01,
+        // Length
+        0x00, 0x08,
+        // Magic Cookie
+        0x21, 0x12,
+        0xA4, 0x42,
+        // Transaction ID
+        0x00, 0x01,
+        0x02, 0x03,
+        0x04, 0x05,
+        0x06, 0x07,
+        0x08, 0x09,
+        0x0A, 0x0B,
+        // Unknown First Attribute
+        0x00, 0x32,
+        0x00, 0x04,
+        0x01, 0x02,
+        0x03, 0x04,
+    };
+
+    var stream = std.io.fixedBufferStream(&bytes);
+    const message = try Message.deserialize(stream.reader(), std.testing.allocator);
+    defer message.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(MessageType{ .class = .request, .method = .binding }, message.type);
+    try std.testing.expectEqual(@as(u96, 0x0102030405060708090A0B), message.transaction_id);
+    try std.testing.expectEqual(@as(usize, 1), message.attributes.len);
+    try std.testing.expect(message.attributes[0] == .raw);
+    try std.testing.expectEqual(@as(u16, 0x0032), message.attributes[0].raw.value);
+    try std.testing.expectEqual(@as(u16, 0x0004), message.attributes[0].raw.length);
+    try std.testing.expectEqualSlices(u8, &.{ 0x01, 0x02, 0x03, 0x04 }, message.attributes[0].raw.data);
 }
