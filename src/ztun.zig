@@ -13,4 +13,5 @@ pub const Server = @import("ztun/Server.zig");
 test {
     _ = fmt;
     _ = net;
+    _ = Server;
 }

@@ -6,14 +6,10 @@ const Self = @This();
 
 const attr = @import("attributes.zig");
 const net = @import("net.zig");
+const ztun = @import("lib.zig");
 
-const Method = @import("lib.zig").Method;
-const Class = @import("lib.zig").Class;
-const Message = @import("lib.zig").Message;
-const MessageBuilder = @import("lib.zig").MessageBuilder;
-
-const version_attribute = attr.Attribute{
-    .software = attr.SoftwareAttribute{ .value = std.fmt.comptimePrint("v{}", .{@import("constants.zig").version}) },
+const version_attribute = ztun.Attribute{
+    .software = attr.Software{ .value = std.fmt.comptimePrint("v{}", .{@import("constants.zig").version}) },
 };
 
 const AgentContext = struct {};
@@ -40,7 +36,7 @@ pub fn deinit(self: *Self) void {
     self.agent_map.deinit();
 }
 
-fn isMethodAllowedForClass(method: Method, class: Class) bool {
+fn isMethodAllowedForClass(method: ztun.Method, class: ztun.Class) bool {
     return switch (class) {
         .request => method == .binding,
         .indication => method == .binding,
@@ -49,18 +45,22 @@ fn isMethodAllowedForClass(method: Method, class: Class) bool {
     };
 }
 
-pub fn processMessage(server: Self, allocator: std.mem.Allocator, message: Message, source: net.Address) Error!?Message {
+pub fn processMessage(server: Self, allocator: std.mem.Allocator, message: ztun.Message, source: net.Address) Error!?ztun.Message {
     if (!isMethodAllowedForClass(message.@"type".method, message.@"type".class)) return error.MethodNotAllowedForClass;
 
-    var has_fingerprint: bool = false;
+    var fingerprint_opt: ?u32 = null;
     for (message.attributes) |a, i| {
         if (a == .known and a.known == .fingerprint) {
-            has_fingerprint = true;
+            fingerprint_opt = a.known.fingerprint.value;
             if (i != message.attributes.len - 1) return error.InvalidFingerprint;
         }
     }
 
-    if (has_fingerprint) {}
+    if (fingerprint_opt) |fingerprint| {
+        const fingerprint_message = ztun.Message.fromParts(message.type.class, message.type.method, message.transaction_id, message.attributes[0 .. message.attributes.len - 1]);
+        const computed_fingerprint = fingerprint_message.computeFingerprint(allocator) catch return error.UnexpectedError;
+        if (computed_fingerprint != fingerprint) return error.InvalidFingerprint;
+    }
 
     switch (message.@"type".class) {
         .error_response, .success_response => {
@@ -73,7 +73,7 @@ pub fn processMessage(server: Self, allocator: std.mem.Allocator, message: Messa
 
     // TODO(Corentin): Other authentication handling if required.
 
-    var response: ?Message = null;
+    var response: ?ztun.Message = null;
     switch (message.@"type".class) {
         .request => {
             response = try server.handleRequest(allocator, message, source);
@@ -86,63 +86,64 @@ pub fn processMessage(server: Self, allocator: std.mem.Allocator, message: Messa
     return response;
 }
 
-pub fn handleRequest(server: Self, allocator: std.mem.Allocator, message: Message, source: net.Address) Error!Message {
+pub fn handleRequest(server: Self, allocator: std.mem.Allocator, message: ztun.Message, source: net.Address) Error!ztun.Message {
     std.log.info("Received {s} request from {any}", .{ @tagName(message.type.method), source });
     _ = server;
     var comprehension_required_unknown_attributes = std.ArrayList(u16).initCapacity(allocator, message.attributes.len) catch return error.UnexpectedError;
     defer comprehension_required_unknown_attributes.deinit();
     for (message.attributes) |a| switch (a) {
         .raw => |raw_attribute| {
-            if (attr.isComprehensionRequiredAttribute(raw_attribute.value)) {
+            if (attr.isComprehensionRequiredRaw(raw_attribute.value)) {
                 comprehension_required_unknown_attributes.appendAssumeCapacity(raw_attribute.value);
             }
         },
         else => {},
     };
-    var message_builder = MessageBuilder.init(allocator);
+    var message_builder = ztun.MessageBuilder.init(allocator);
     defer message_builder.deinit();
     message_builder.setMethod(message.@"type".method);
     message_builder.transactionId(message.transaction_id);
 
     if (comprehension_required_unknown_attributes.items.len > 0) {
         message_builder.setClass(.error_response);
-        const error_code_attribute = attr.Attribute{
-            .error_code = attr.ErrorCodeAttribute{
+        const error_code_attribute = ztun.Attribute{
+            .error_code = attr.ErrorCode{
                 .value = .unknown_attribute,
                 .reason = "Unknown comprehension-required attributes",
             },
         };
-        message_builder.addKnownAttribute(error_code_attribute) catch return error.UnexpectedError;
-        const unknown_attributes = attr.Attribute{
-            .unknown_attributes = attr.UnknownAttribute{ .attribute_types = comprehension_required_unknown_attributes.toOwnedSlice() },
+        message_builder.addAttribute(error_code_attribute) catch return error.UnexpectedError;
+        const unknown_attributes = ztun.Attribute{
+            .unknown_attributes = attr.UnknownAttributes{ .attribute_types = comprehension_required_unknown_attributes.toOwnedSlice() },
         };
-        message_builder.addKnownAttribute(unknown_attributes) catch return error.UnexpectedError;
-        message_builder.addKnownAttribute(version_attribute) catch return error.UnexpectedError;
+        message_builder.addAttribute(unknown_attributes) catch return error.UnexpectedError;
+        message_builder.addAttribute(version_attribute) catch return error.UnexpectedError;
         return message_builder.build() catch return error.UnexpectedError;
     }
 
     message_builder.setClass(.success_response);
-    const xor_mapped_address_attribute = attr.Attribute{
-        .xor_mapped_address = attr.XorMappedAddressAttribute.encode(
+    const xor_mapped_address_attribute = ztun.Attribute{
+        .xor_mapped_address = attr.XorMappedAddress.encode(
             .{
                 .port = source.ipv4.port,
-                .family = attr.Family{ .ipv4 = source.ipv4.value },
+                .family = attr.AddressFamily{ .ipv4 = source.ipv4.value },
             },
             message.transaction_id,
         ),
     };
-    message_builder.addKnownAttribute(xor_mapped_address_attribute) catch return error.UnexpectedError;
-    message_builder.addKnownAttribute(version_attribute) catch return error.UnexpectedError;
+    message_builder.addAttribute(xor_mapped_address_attribute) catch return error.UnexpectedError;
+    message_builder.addAttribute(version_attribute) catch return error.UnexpectedError;
+    message_builder.addFingerprint();
     return message_builder.build() catch return error.UnexpectedError;
 }
 
-pub fn handleIndication(server: Self, allocator: std.mem.Allocator, message: Message) Error!void {
+pub fn handleIndication(server: Self, allocator: std.mem.Allocator, message: ztun.Message) Error!void {
     _ = message;
     _ = allocator;
     _ = server;
 }
 
-pub fn handleResponse(server: Self, allocator: std.mem.Allocator, message: Message, success: bool) Error!void {
+pub fn handleResponse(server: Self, allocator: std.mem.Allocator, message: ztun.Message, success: bool) Error!void {
     _ = message;
     _ = allocator;
     _ = success;
@@ -151,7 +152,7 @@ pub fn handleResponse(server: Self, allocator: std.mem.Allocator, message: Messa
 
 pub fn processRawMessage(self: Self, allocator: std.mem.Allocator, bytes: []const u8, source: net.Address) ?[]const u8 {
     var input_stream = std.io.fixedBufferStream(bytes);
-    const message = Message.deserialize(input_stream.reader(), allocator) catch |err| {
+    const message = ztun.Message.deserialize(input_stream.reader(), allocator) catch |err| {
         std.log.err("{any}", .{err});
         return null;
     };
@@ -175,4 +176,36 @@ pub fn processRawMessage(self: Self, allocator: std.mem.Allocator, bytes: []cons
         return output_stream.getWritten();
     }
     return null;
+}
+
+test "check fingerprint while processing a message" {
+    const message = msg: {
+        var builder = ztun.MessageBuilder.init(std.testing.allocator);
+        defer builder.deinit();
+
+        builder.setClass(.request);
+        builder.setMethod(.binding);
+        builder.transactionId(0x0102030405060708090A0B);
+        builder.addFingerprint();
+        break :msg try builder.build();
+    };
+    defer message.deinit(std.testing.allocator);
+    const true_fingerprint = message.attributes[0].known.fingerprint.value;
+
+    var server = Self.init(std.testing.allocator);
+    defer server.deinit();
+
+    const wrong_message = ztun.Message{
+        .type = message.type,
+        .transaction_id = message.transaction_id,
+        .length = message.length,
+        .attributes = &.{ztun.GenericAttribute{
+            .known = ztun.Attribute{
+                .fingerprint = attr.Fingerprint{
+                    .value = true_fingerprint + 1,
+                },
+            },
+        }},
+    };
+    try std.testing.expectError(error.InvalidFingerprint, server.processMessage(std.testing.allocator, wrong_message, undefined));
 }

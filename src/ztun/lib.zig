@@ -3,8 +3,7 @@
 
 const std = @import("std");
 
-const KnownAttribute = @import("attributes.zig").Attribute;
-const AttributeType = @import("attributes.zig").AttributeType;
+const attr = @import("attributes.zig");
 const magic_cookie = @import("constants.zig").magic_cookie;
 const fingerprint_magic = @import("constants.zig").fingerprint_magic;
 const io = @import("io.zig");
@@ -55,6 +54,59 @@ pub const MessageType = struct {
     }
 };
 
+pub const Attribute = union(attr.Type) {
+    mapped_address: attr.MappedAddress,
+    xor_mapped_address: attr.XorMappedAddress,
+    username: attr.Username,
+    userhash: attr.Userhash,
+    message_integrity: attr.MessageIntegrity,
+    message_integrity_sha256: attr.MessageIntegritySha256,
+    fingerprint: attr.Fingerprint,
+    error_code: attr.ErrorCode,
+    realm: attr.Realm,
+    nonce: attr.Nonce,
+    password_algorithms: attr.PasswordAlgorithms,
+    password_algorithm: attr.PasswordAlgorithm,
+    unknown_attributes: attr.UnknownAttributes,
+    software: attr.Software,
+    alternate_server: attr.AlternateServer,
+    alternate_domain: attr.AlternateDomain,
+
+    pub fn size(self: *const Attribute) usize {
+        return 4 + switch (self.*) {
+            inline else => |attribute| attribute.size(),
+        };
+    }
+
+    pub fn serialize(self: *const Attribute, writer: anytype) !void {
+        return switch (self.*) {
+            inline else => |attribute, tag| {
+                try writer.writeIntBig(u16, @enumToInt(tag));
+                try writer.writeIntBig(u16, @truncate(u16, attribute.size()));
+                try attribute.serialize(writer);
+            },
+        };
+    }
+
+    pub fn deserialize(reader: anytype, allocator: std.mem.Allocator) !Attribute {
+        const raw_attribute_type = try reader.readIntBig(u16);
+        const attribute_length = try reader.readIntBig(u16);
+        const attribute_type = std.meta.intToEnum(attr.Type, raw_attribute_type) catch return error.UnknownAttribute;
+
+        return switch (attribute_type) {
+            inline else => |tag| blk: {
+                break :blk @unionInit(Attribute, @tagName(tag), try std.meta.TagPayload(Attribute, tag).deserializeAlloc(reader, attribute_length, allocator));
+            },
+        };
+    }
+
+    pub fn deinit(self: *const Attribute, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            inline else => |attribute| attribute.deinit(allocator),
+        }
+    }
+};
+
 pub const RawAttribute = struct {
     value: u16,
     length: u16,
@@ -76,24 +128,24 @@ pub const RawAttribute = struct {
     }
 };
 
-pub const Attribute = union(enum) {
+pub const GenericAttribute = union(enum) {
     raw: RawAttribute,
-    known: KnownAttribute,
+    known: Attribute,
 
-    pub fn size(self: *const Attribute) usize {
+    pub fn size(self: *const GenericAttribute) usize {
         return switch (self.*) {
             inline else => |a| a.size(),
         };
     }
 
-    pub fn deinit(self: *const Attribute, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *const GenericAttribute, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .raw => |value| value.deinit(allocator),
             .known => |value| value.deinit(allocator),
         }
     }
 
-    pub fn serialize(self: *const Attribute, writer: anytype) !void {
+    pub fn serialize(self: *const GenericAttribute, writer: anytype) !void {
         return switch (self.*) {
             .raw => |value| value.serialize(writer),
             .known => |value| value.serialize(writer),
@@ -118,9 +170,9 @@ pub const Message = struct {
     @"type": MessageType,
     transaction_id: u96,
     length: u16,
-    attributes: []const Attribute,
+    attributes: []const GenericAttribute,
 
-    pub fn fromParts(class: Class, method: Method, transaction_id: u96, attributes: []const Attribute) Self {
+    pub fn fromParts(class: Class, method: Method, transaction_id: u96, attributes: []const GenericAttribute) Self {
         var length: u16 = 0;
         for (attributes) |attribute| {
             length += @truncate(u16, attribute.size());
@@ -179,17 +231,17 @@ pub const Message = struct {
         return MessageType.tryFromInteger(@truncate(u14, raw_message_type)) orelse error.UnsupportedMethod;
     }
 
-    fn readKnownAttribute(reader: anytype, attribute_type: AttributeType, length: u16, allocator: std.mem.Allocator) !KnownAttribute {
+    fn readKnownAttribute(reader: anytype, attribute_type: attr.Type, length: u16, allocator: std.mem.Allocator) !Attribute {
         return switch (attribute_type) {
             inline else => |tag| blk: {
-                const Type = std.meta.TagPayload(KnownAttribute, tag);
-                break :blk @unionInit(KnownAttribute, @tagName(tag), try Type.deserializeAlloc(reader, length, allocator));
+                const Type = std.meta.TagPayload(Attribute, tag);
+                break :blk @unionInit(Attribute, @tagName(tag), try Type.deserializeAlloc(reader, length, allocator));
             },
         };
     }
 
     pub fn deserialize(reader: anytype, allocator: std.mem.Allocator) DeserializationError!Message {
-        var attribute_list = std.ArrayList(Attribute).init(allocator);
+        var attribute_list = std.ArrayList(GenericAttribute).init(allocator);
         defer {
             for (attribute_list.items) |a| {
                 a.deinit(allocator);
@@ -210,14 +262,14 @@ pub const Message = struct {
 
             // TODO(Corentin): Might be useful to keep the original message, or at least some way to reconstruct it for fingerprint
             //                 check purposes.
-            if (std.meta.intToEnum(AttributeType, raw_attribute_type)) |attribute_type| {
+            if (std.meta.intToEnum(attr.Type, raw_attribute_type)) |attribute_type| {
                 const attribute = try readKnownAttribute(attribute_reader_state.reader(), attribute_type, attribute_length, allocator);
-                try attribute_list.append(Attribute{ .known = attribute });
+                try attribute_list.append(GenericAttribute{ .known = attribute });
             } else |_| {
                 const data = try allocator.alloc(u8, attribute_length);
                 errdefer allocator.free(data);
                 try io.readNoEofAligned(attribute_reader_state.reader(), 4, data);
-                try attribute_list.append(Attribute{
+                try attribute_list.append(GenericAttribute{
                     .raw = RawAttribute{
                         .value = raw_attribute_type,
                         .length = attribute_length,
@@ -251,12 +303,12 @@ pub const MessageBuilder = struct {
     transaction_id: ?u96 = null,
     has_fingerprint: bool = false,
     message_integrity_type: MessageIntegrityType = .none,
-    attribute_list: std.ArrayList(Attribute),
+    attribute_list: std.ArrayList(GenericAttribute),
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return Self{
             .allocator = allocator,
-            .attribute_list = std.ArrayList(Attribute).init(allocator),
+            .attribute_list = std.ArrayList(GenericAttribute).init(allocator),
         };
     }
 
@@ -288,19 +340,19 @@ pub const MessageBuilder = struct {
         self.message_integrity_type = message_integrity_type;
     }
 
-    pub fn addAttribute(self: *Self, attribute: Attribute) !void {
+    fn addGenericAttribute(self: *Self, attribute: GenericAttribute) !void {
         try self.attribute_list.append(attribute);
     }
 
-    pub fn addKnownAttribute(self: *Self, known_attribute: KnownAttribute) !void {
-        switch (known_attribute) {
+    pub fn addAttribute(self: *Self, attribute: Attribute) !void {
+        switch (attribute) {
             .fingerprint, .message_integrity, .message_integrity_sha256 => return error.InvalidAttribute,
-            else => try self.addAttribute(Attribute{ .known = known_attribute }),
+            else => try self.addGenericAttribute(GenericAttribute{ .known = attribute }),
         }
     }
 
     pub fn addRawAttribute(self: *Self, raw_attribute: RawAttribute) !void {
-        return self.addAttribute(Attribute{ .unknown = raw_attribute });
+        return self.addGenericAttribute(GenericAttribute{ .unknown = raw_attribute });
     }
 
     fn isValid(self: *const Self) bool {
@@ -313,7 +365,7 @@ pub const MessageBuilder = struct {
             var buffer: [2048]u8 = undefined;
             var arena_state = std.heap.FixedBufferAllocator.init(&buffer);
             const fingerprint = Message.fromParts(self.class.?, self.method.?, self.transaction_id.?, self.attribute_list.items).computeFingerprint(arena_state.allocator()) catch unreachable;
-            const attribute = Attribute{ .known = @unionInit(KnownAttribute, "fingerprint", .{ .value = fingerprint }) };
+            const attribute = GenericAttribute{ .known = @unionInit(Attribute, "fingerprint", .{ .value = fingerprint }) };
             try self.attribute_list.append(attribute);
         }
 
@@ -398,6 +450,13 @@ test "integer to message type" {
     }
 }
 
+test "attribute size" {
+    const software_attribute = attr.Software{ .value = "abc" };
+    const attribute = Attribute{ .software = software_attribute };
+    try std.testing.expectEqual(@as(usize, 4), software_attribute.size());
+    try std.testing.expectEqual(@as(usize, 8), attribute.size());
+}
+
 test "Message fingeprint" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -414,7 +473,7 @@ test "Message fingeprint" {
     };
     try std.testing.expectEqual(message.attributes.len, 1);
     try std.testing.expect(message.attributes[0] == .known);
-    try std.testing.expect(message.attributes[0].known == AttributeType.fingerprint);
+    try std.testing.expect(message.attributes[0].known == attr.Type.fingerprint);
     try std.testing.expectEqual(@as(u32, 0x5b0ff6fc), message.attributes[0].known.fingerprint.value);
 }
 
@@ -452,4 +511,28 @@ test "try to deserialize a message" {
     try std.testing.expectEqual(@as(u16, 0x0032), message.attributes[0].raw.value);
     try std.testing.expectEqual(@as(u16, 0x0004), message.attributes[0].raw.length);
     try std.testing.expectEqualSlices(u8, &.{ 0x01, 0x02, 0x03, 0x04 }, message.attributes[0].raw.data);
+}
+
+test "UNKNOWN-ATTRIBUTES deserialization" {
+    const buffer = [_]u8{
+        // Type
+        0x00, 0x0A,
+        // Length
+        0x00, 0x06,
+        // UnknownAttributes
+        0x00, 0x02,
+        0x00, 0x03,
+        0x00, 0x04,
+        // Padding
+        0x00, 0x00,
+    };
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+
+    var stream = std.io.fixedBufferStream(&buffer);
+
+    const attribute = try Attribute.deserialize(stream.reader(), arena_state.allocator());
+    try std.testing.expect(attribute == .unknown_attributes);
+    try std.testing.expectEqualSlices(u16, &[_]u16{ 0x0002, 0x0003, 0x0004 }, attribute.unknown_attributes.attribute_types);
 }
