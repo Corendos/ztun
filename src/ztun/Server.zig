@@ -122,14 +122,25 @@ pub fn handleRequest(server: Self, allocator: std.mem.Allocator, message: ztun.M
     }
 
     message_builder.setClass(.success_response);
-    const xor_mapped_address_attribute = ztun.Attribute{
-        .xor_mapped_address = attr.XorMappedAddress.encode(
-            .{
-                .port = source.ipv4.port,
-                .family = attr.AddressFamily{ .ipv4 = source.ipv4.value },
-            },
-            message.transaction_id,
-        ),
+    const xor_mapped_address_attribute = switch (source) {
+        .ipv4 => ztun.Attribute{
+            .xor_mapped_address = attr.XorMappedAddress.encode(
+                .{
+                    .port = source.ipv4.port,
+                    .family = attr.AddressFamily{ .ipv4 = source.ipv4.value },
+                },
+                message.transaction_id,
+            ),
+        },
+        .ipv6 => ztun.Attribute{
+            .xor_mapped_address = attr.XorMappedAddress.encode(
+                .{
+                    .port = source.ipv6.port,
+                    .family = attr.AddressFamily{ .ipv6 = source.ipv6.value },
+                },
+                message.transaction_id,
+            ),
+        },
     };
     message_builder.addAttribute(xor_mapped_address_attribute) catch return error.UnexpectedError;
     message_builder.addAttribute(version_attribute) catch return error.UnexpectedError;

@@ -39,9 +39,15 @@ pub fn build(b: *std.build.Builder) void {
 
     const server_sample_executable_run = server_sample_executable.run();
     server_sample_executable_run.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        server_sample_executable_run.addArgs(args);
+    }
 
     const client_sample_executable_run = client_sample_executable.run();
     client_sample_executable_run.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        client_sample_executable_run.addArgs(args);
+    }
 
     const server_sample_run_step = b.step("run_server", "Run server sample");
     server_sample_run_step.dependOn(&server_sample_executable_run.step);
