@@ -14,7 +14,7 @@ pub fn main() anyerror!void {
     const ipv4_bind_address = ztun.net.Address{ .ipv4 = try ztun.net.Ipv4Address.parse("127.0.0.1", 8888) };
     const ipv6_bind_address = ztun.net.Address{ .ipv6 = try ztun.net.Ipv6Address.parse("::1", 8888) };
 
-    var server = ztun.Server.init(gpa.allocator());
+    var server = ztun.Server.init(gpa.allocator(), ztun.Server.Options{ .authentication_type = .none });
     defer server.deinit();
 
     var ipv4_socket = try utils.createSocket(.ipv4);
@@ -51,7 +51,7 @@ pub fn main() anyerror!void {
                     continue;
                 };
 
-                if (server.processRawMessage(arena_state.allocator(), message.data, message.source)) |response| {
+                if (server.processRawMessage(message.data, message.source, arena_state.allocator())) |response| {
                     try utils.sendTo(entry.fd, response, message.source);
                     arena_state.allocator().free(response);
                 }

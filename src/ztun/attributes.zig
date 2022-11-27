@@ -61,9 +61,12 @@ pub const MappedAddress = struct {
     family: AddressFamily,
     port: u16,
 
+    pub fn alignedSize(self: *const MappedAddress) usize {
+        return std.mem.alignForward(self.size(), 4);
+    }
+
     pub fn size(self: *const MappedAddress) usize {
-        const raw_size: usize = 4 + self.family.size();
-        return std.mem.alignForward(raw_size, 4);
+        return 4 + self.family.size();
     }
 
     pub fn serialize(self: *const MappedAddress, writer: anytype) !void {
@@ -110,10 +113,12 @@ pub const XorMappedAddress = struct {
     x_family: AddressFamily,
     x_port: u16,
 
-    pub fn size(self: *const XorMappedAddress) usize {
-        const raw_size: usize = 4 + self.x_family.size();
+    pub fn alignedSize(self: *const XorMappedAddress) usize {
+        return std.mem.alignForward(self.size(), 4);
+    }
 
-        return std.mem.alignForward(raw_size, 4);
+    pub fn size(self: *const XorMappedAddress) usize {
+        return 4 + self.x_family.size();
     }
 
     pub fn serialize(self: *const XorMappedAddress, writer: anytype) !void {
@@ -193,8 +198,12 @@ pub const XorMappedAddress = struct {
 pub const Username = struct {
     value: []const u8,
 
+    pub fn alignedSize(self: *const Username) usize {
+        return std.mem.alignForward(self.size(), 4);
+    }
+
     pub fn size(self: *const Username) usize {
-        return std.mem.alignForward(self.value.len, 4);
+        return self.value.len;
     }
 
     pub fn serialize(self: *const Username, writer: anytype) !void {
@@ -221,8 +230,12 @@ pub const Username = struct {
 pub const Userhash = struct {
     value: [32]u8,
 
+    pub fn alignedSize(self: *const Userhash) usize {
+        return std.mem.alignForward(self.size(), 4);
+    }
+
     pub fn size(self: *const Userhash) usize {
-        return std.mem.alignForward(self.value.len, 4);
+        return self.value.len;
     }
 
     pub fn serialize(self: *const Userhash, writer: anytype) !void {
@@ -250,8 +263,12 @@ pub const Userhash = struct {
 pub const MessageIntegrity = struct {
     value: [20]u8,
 
+    pub fn alignedSize(self: *const MessageIntegrity) usize {
+        return std.mem.alignForward(self.size(), 4);
+    }
+
     pub fn size(self: *const MessageIntegrity) usize {
-        return std.mem.alignForward(self.value.len, 4);
+        return self.value.len;
     }
 
     pub fn serialize(self: *const MessageIntegrity, writer: anytype) !void {
@@ -277,39 +294,59 @@ pub const MessageIntegrity = struct {
 };
 
 pub const MessageIntegritySha256 = struct {
-    value: []const u8,
+    storage: [32]u8,
+    length: usize,
+
+    pub fn fromRaw(value: []const u8) !MessageIntegritySha256 {
+        if (!std.mem.isAligned(value.len, 4)) return error.InvalidAttributeFormat;
+        var self: MessageIntegritySha256 = undefined;
+        std.debug.assert(value.len <= @sizeOf(@TypeOf(self.storage)));
+        std.mem.copy(u8, self.storage[0..value.len], value);
+        self.length = value.len;
+        return self;
+    }
+
+    pub fn alignedSize(self: *const MessageIntegritySha256) usize {
+        return std.mem.alignForward(self.size(), 4);
+    }
 
     pub fn size(self: *const MessageIntegritySha256) usize {
-        return std.mem.alignForward(self.value.len, 4);
+        return self.length;
     }
 
     pub fn serialize(self: *const MessageIntegritySha256, writer: anytype) !void {
-        std.debug.assert(std.mem.isAligned(self.value.len, 4));
-        try writer.writeAll(self.value);
+        std.debug.assert(std.mem.isAligned(self.length, 4));
+        try writer.writeAll(self.storage[0..self.length]);
     }
 
     pub fn deserializeAlloc(reader: anytype, length: usize, allocator: std.mem.Allocator) !MessageIntegritySha256 {
-        var buffer = try allocator.alloc(u8, length);
-        errdefer allocator.free(buffer);
-
-        return MessageIntegritySha256.deserialize(reader, buffer);
+        _ = allocator;
+        return MessageIntegritySha256.deserialize(reader, length);
     }
 
-    pub fn deserialize(reader: anytype, buf: []u8) !MessageIntegritySha256 {
-        try reader.readNoEof(buf);
-        return MessageIntegritySha256{ .value = buf };
+    pub fn deserialize(reader: anytype, length: usize) !MessageIntegritySha256 {
+        var self: MessageIntegritySha256 = undefined;
+        std.debug.assert(length <= @sizeOf(@TypeOf(self.storage)));
+        try reader.readNoEof(self.storage[0..length]);
+        self.length = length;
+        return self;
     }
 
     pub fn deinit(self: *const MessageIntegritySha256, allocator: std.mem.Allocator) void {
-        allocator.free(self.value);
+        _ = allocator;
+        _ = self;
     }
 };
 
 pub const Fingerprint = struct {
     value: u32,
 
+    pub fn alignedSize(self: *const Fingerprint) usize {
+        return std.mem.alignForward(self.size(), 4);
+    }
+
     pub fn size(self: *const Fingerprint) usize {
-        return std.mem.alignForward(@sizeOf(@TypeOf(self.value)), 4);
+        return @sizeOf(@TypeOf(self.value));
     }
 
     pub fn serialize(self: *const Fingerprint, writer: anytype) !void {
@@ -344,7 +381,7 @@ fn rawErrorCodeFromClassAndNumber(class: u3, number: u8) u32 {
 pub const RawErrorCode = enum(u32) {
     try_alternate = rawErrorCodeFromClassAndNumber(3, 0),
     bad_request = rawErrorCodeFromClassAndNumber(4, 0),
-    unauthorized = rawErrorCodeFromClassAndNumber(4, 1),
+    unauthenticated = rawErrorCodeFromClassAndNumber(4, 1),
     unknown_attribute = rawErrorCodeFromClassAndNumber(4, 20),
     stale_nonce = rawErrorCodeFromClassAndNumber(4, 38),
     server_error = rawErrorCodeFromClassAndNumber(5, 0),
@@ -354,9 +391,12 @@ pub const ErrorCode = struct {
     value: RawErrorCode,
     reason: []const u8,
 
+    pub fn alignedSize(self: *const ErrorCode) usize {
+        return std.mem.alignForward(self.size(), 4);
+    }
+
     pub fn size(self: *const ErrorCode) usize {
-        const raw_size = 4 + self.reason.len;
-        return std.mem.alignForward(raw_size, 4);
+        return 4 + self.reason.len;
     }
 
     pub fn serialize(self: *const ErrorCode, writer: anytype) !void {
@@ -390,8 +430,12 @@ pub const ErrorCode = struct {
 pub const Realm = struct {
     value: []const u8,
 
+    pub fn alignedSize(self: *const Realm) usize {
+        return std.mem.alignForward(self.size(), 4);
+    }
+
     pub fn size(self: *const Realm) usize {
-        return std.mem.alignForward(self.value.len, 4);
+        return self.value.len;
     }
 
     pub fn serialize(self: *const Realm, writer: anytype) !void {
@@ -420,8 +464,12 @@ pub const Realm = struct {
 pub const Nonce = struct {
     value: []const u8,
 
+    pub fn alignedSize(self: *const Nonce) usize {
+        return std.mem.alignForward(self.size(), 4);
+    }
+
     pub fn size(self: *const Nonce) usize {
-        return std.mem.alignForward(self.value.len, 4);
+        return self.value.len;
     }
 
     pub fn serialize(self: *const Nonce, writer: anytype) !void {
@@ -496,12 +544,16 @@ pub const Algorithm = union(AlgorithmType) {
 pub const PasswordAlgorithms = struct {
     algorithms: []Algorithm,
 
+    pub fn alignedSize(self: *const PasswordAlgorithms) usize {
+        return std.mem.alignForward(self.size(), 4);
+    }
+
     pub fn size(self: *const PasswordAlgorithms) usize {
         var raw_size: usize = 0;
         for (self.algorithms) |algorithm| {
             raw_size += 4 + std.mem.alignForward(algorithm.parameterSize(), 4);
         }
-        return std.mem.alignForward(raw_size, 4);
+        return raw_size;
     }
 
     pub fn serialize(self: *const PasswordAlgorithms, writer: anytype) !void {
@@ -538,9 +590,12 @@ pub const PasswordAlgorithms = struct {
 pub const PasswordAlgorithm = struct {
     algorithm: Algorithm,
 
+    pub fn alignedSize(self: *const PasswordAlgorithm) usize {
+        return std.mem.alignForward(self.size(), 4);
+    }
+
     pub fn size(self: *const PasswordAlgorithm) usize {
-        const raw_size = 4 + std.mem.alignForward(self.algorithm.parameterSize(), 4);
-        return std.mem.alignForward(raw_size, 4);
+        return 4 + std.mem.alignForward(self.algorithm.parameterSize(), 4);
     }
 
     pub fn serialize(self: *const PasswordAlgorithm, writer: anytype) !void {
@@ -566,9 +621,12 @@ pub const PasswordAlgorithm = struct {
 pub const UnknownAttributes = struct {
     attribute_types: []u16,
 
+    pub fn alignedSize(self: *const UnknownAttributes) usize {
+        return std.mem.alignForward(self.size(), 4);
+    }
+
     pub fn size(self: *const UnknownAttributes) usize {
-        const raw_size = self.attribute_types.len * @sizeOf(u16);
-        return std.mem.alignForward(raw_size, 4);
+        return self.attribute_types.len * @sizeOf(u16);
     }
 
     pub fn serialize(self: *const UnknownAttributes, writer: anytype) !void {
@@ -606,8 +664,12 @@ pub const UnknownAttributes = struct {
 pub const Software = struct {
     value: []const u8,
 
+    pub fn alignedSize(self: *const Software) usize {
+        return std.mem.alignForward(self.size(), 4);
+    }
+
     pub fn size(self: *const Software) usize {
-        return std.mem.alignForward(self.value.len, 4);
+        return self.value.len;
     }
 
     pub fn serialize(self: *const Software, writer: anytype) !void {
@@ -637,9 +699,12 @@ pub const AlternateServer = struct {
     family: AddressFamily,
     port: u16,
 
+    pub fn alignedSize(self: *const AlternateServer) usize {
+        return std.mem.alignForward(self.size(), 4);
+    }
+
     pub fn size(self: *const AlternateServer) usize {
-        const raw_size: usize = 4 + self.family.size();
-        return std.mem.alignForward(raw_size, 4);
+        return 4 + self.family.size();
     }
 
     pub fn serialize(self: *const AlternateServer, writer: anytype) !void {
@@ -685,8 +750,12 @@ pub const AlternateServer = struct {
 pub const AlternateDomain = struct {
     value: []const u8,
 
+    pub fn alignedSize(self: *const AlternateDomain) usize {
+        return std.mem.alignForward(self.size(), 4);
+    }
+
     pub fn size(self: *const AlternateDomain) usize {
-        return std.mem.alignForward(self.value.len, 4);
+        return self.value.len;
     }
 
     pub fn serialize(self: *const AlternateDomain, writer: anytype) !void {

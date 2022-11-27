@@ -59,6 +59,14 @@ pub fn main() anyerror!void {
         message_builder.setClass(ztun.Class.request);
         message_builder.setMethod(ztun.Method.binding);
         message_builder.randomTransactionId();
+        try message_builder.addAttribute(.{ .username = ztun.attr.Username{ .value = "anon" } });
+
+        const authentication = ztun.auth.Authentication{ .short_term = ztun.auth.ShortTermAuthentication{ .password = "password" } };
+        _ = authentication;
+
+        //message_builder.addMessageIntegrity(authentication);
+        //message_builder.addMessageIntegritySha256(authentication);
+        message_builder.addFingerprint();
         break :msg try message_builder.build();
     };
 
@@ -75,5 +83,5 @@ pub fn main() anyerror!void {
         break :blk try ztun.Message.deserialize(stream.reader(), scratch_allocator_state.allocator());
     };
 
-    std.log.debug("{any}", .{message});
+    std.log.info("{any}", .{message});
 }

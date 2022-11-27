@@ -256,7 +256,7 @@ test "MESSAGE-INTEGRITY-SHA256 deserialization" {
     defer attribute.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(attr.Type.message_integrity_sha256, attribute);
-    try std.testing.expectEqualSlices(u8, &hash, attribute.message_integrity_sha256.value);
+    try std.testing.expectEqualSlices(u8, &hash, attribute.message_integrity_sha256.storage[0..attribute.message_integrity_sha256.length]);
 }
 
 test "FINGERPRINT deserialization" {
@@ -412,15 +412,15 @@ test "UNKNOWN-ATTRIBUTES deserialization" {
     const buffer = [_]u8{
         // Header
         0x00, 0x0A,
-        0x00, 0x08,
+        0x00, 0x06,
         // Attribute 1
         0x7F, 0x00,
         // Attribute 2
         0x7F, 0x01,
         // Attribute 3
         0x7F, 0x02,
-        // Attribute 4
-        0x7F, 0x03,
+        // Padding
+        0x00, 0x00,
     };
 
     var stream = std.io.fixedBufferStream(&buffer);
@@ -428,12 +428,11 @@ test "UNKNOWN-ATTRIBUTES deserialization" {
     const attribute = try ztun.Attribute.deserialize(stream.reader(), std.testing.allocator);
     defer attribute.deinit(std.testing.allocator);
     try std.testing.expectEqual(attr.Type.unknown_attributes, attribute);
-    try std.testing.expectEqual(@as(usize, 4), attribute.unknown_attributes.attribute_types.len);
+    try std.testing.expectEqual(@as(usize, 3), attribute.unknown_attributes.attribute_types.len);
 
     try std.testing.expectEqual(@as(u16, 0x7F00), attribute.unknown_attributes.attribute_types[0]);
     try std.testing.expectEqual(@as(u16, 0x7F01), attribute.unknown_attributes.attribute_types[1]);
     try std.testing.expectEqual(@as(u16, 0x7F02), attribute.unknown_attributes.attribute_types[2]);
-    try std.testing.expectEqual(@as(u16, 0x7F03), attribute.unknown_attributes.attribute_types[3]);
 }
 
 test "SOFTWARE deserialization" {

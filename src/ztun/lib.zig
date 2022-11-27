@@ -3,10 +3,13 @@
 
 const std = @import("std");
 
-const attr = @import("attributes.zig");
+pub const attr = @import("attributes.zig");
+pub const io = @import("io.zig");
+pub const fmt = @import("fmt.zig");
+pub const auth = @import("authentication.zig");
+
 const magic_cookie = @import("constants.zig").magic_cookie;
 const fingerprint_magic = @import("constants.zig").fingerprint_magic;
-const io = @import("io.zig");
 
 pub const Method = enum(u12) {
     binding = 0b000000000001,
@@ -72,9 +75,13 @@ pub const Attribute = union(attr.Type) {
     alternate_server: attr.AlternateServer,
     alternate_domain: attr.AlternateDomain,
 
+    pub fn alignedSize(self: *const Attribute) usize {
+        return std.mem.alignForward(self.size(), 4);
+    }
+
     pub fn size(self: *const Attribute) usize {
         return 4 + switch (self.*) {
-            inline else => |attribute| attribute.size(),
+            inline else => |attribute| attribute.alignedSize(),
         };
     }
 
@@ -94,9 +101,7 @@ pub const Attribute = union(attr.Type) {
         const attribute_type = std.meta.intToEnum(attr.Type, raw_attribute_type) catch return error.UnknownAttribute;
 
         return switch (attribute_type) {
-            inline else => |tag| blk: {
-                break :blk @unionInit(Attribute, @tagName(tag), try std.meta.TagPayload(Attribute, tag).deserializeAlloc(reader, attribute_length, allocator));
-            },
+            inline else => |tag| @unionInit(Attribute, @tagName(tag), try std.meta.TagPayload(Attribute, tag).deserializeAlloc(reader, attribute_length, allocator)),
         };
     }
 
@@ -112,9 +117,12 @@ pub const RawAttribute = struct {
     length: u16,
     data: []const u8,
 
+    pub fn alignedSize(self: *const RawAttribute) usize {
+        return std.mem.alignForward(self.size(), 4);
+    }
+
     pub fn size(self: *const RawAttribute) usize {
-        const raw_size: usize = 4 + self.length;
-        return std.mem.alignForward(raw_size, 4);
+        return 4 + self.length;
     }
 
     pub fn deinit(self: *const RawAttribute, allocator: std.mem.Allocator) void {
@@ -131,6 +139,12 @@ pub const RawAttribute = struct {
 pub const GenericAttribute = union(enum) {
     raw: RawAttribute,
     known: Attribute,
+
+    pub fn alignedSize(self: *const GenericAttribute) usize {
+        return switch (self.*) {
+            inline else => |a| a.alignedSize(),
+        };
+    }
 
     pub fn size(self: *const GenericAttribute) usize {
         return switch (self.*) {
@@ -175,7 +189,7 @@ pub const Message = struct {
     pub fn fromParts(class: Class, method: Method, transaction_id: u96, attributes: []const GenericAttribute) Self {
         var length: u16 = 0;
         for (attributes) |attribute| {
-            length += @truncate(u16, attribute.size());
+            length += @truncate(u16, attribute.alignedSize());
         }
 
         return Message{
@@ -219,8 +233,35 @@ pub const Message = struct {
         // Take fingerprint into account
         message.length += 8;
         var stream = std.io.fixedBufferStream(buffer);
-        message.serialize(stream.writer()) catch unreachable;
+        try message.serialize(stream.writer());
         return std.hash.Crc32.hash(stream.getWritten()) ^ @as(u32, fingerprint_magic);
+    }
+
+    pub fn computeMessageIntegrity(self: *const Self, allocator: std.mem.Allocator, storage: *[20]u8, key: []const u8) ![]u8 {
+        var buffer = try allocator.alloc(u8, 2048);
+        defer allocator.free(buffer);
+
+        var message = self.*;
+        // Take message integrity into account
+        message.length += 24;
+        var stream = std.io.fixedBufferStream(buffer);
+        message.serialize(stream.writer()) catch unreachable;
+        std.crypto.auth.hmac.HmacSha1.create(storage, stream.getWritten(), key);
+        return storage[0..20];
+    }
+
+    pub fn computeMessageIntegritySha256(self: *const Self, allocator: std.mem.Allocator, storage: *[32]u8, key: []const u8) ![]u8 {
+        var buffer = try allocator.alloc(u8, 2048);
+        defer allocator.free(buffer);
+
+        var message = self.*;
+        // Take message integrity into account
+        message.length += 36;
+        var stream = std.io.fixedBufferStream(buffer);
+        message.serialize(stream.writer()) catch unreachable;
+        const written = stream.getWritten();
+        std.crypto.auth.hmac.sha2.HmacSha256.create(storage, written, key);
+        return storage[0..];
     }
 
     fn readMessageType(reader: anytype) DeserializationError!MessageType {
@@ -288,12 +329,6 @@ pub const Message = struct {
     }
 };
 
-pub const MessageIntegrityType = enum {
-    none,
-    simple,
-    sha256,
-};
-
 pub const MessageBuilder = struct {
     const Self = @This();
 
@@ -302,7 +337,8 @@ pub const MessageBuilder = struct {
     method: ?Method = null,
     transaction_id: ?u96 = null,
     has_fingerprint: bool = false,
-    message_integrity_type: MessageIntegrityType = .none,
+    message_integrity: ?auth.Authentication = null,
+    message_integrity_sha256: ?auth.Authentication = null,
     attribute_list: std.ArrayList(GenericAttribute),
 
     pub fn init(allocator: std.mem.Allocator) Self {
@@ -332,12 +368,26 @@ pub const MessageBuilder = struct {
         self.method = method;
     }
 
+    pub fn setHeader(self: *Self, method: Method, class: Class, transaction_id_opt: ?u96) void {
+        self.setMethod(method);
+        self.setClass(class);
+        if (transaction_id_opt) |transaction_id| {
+            self.transactionId(transaction_id);
+        } else {
+            self.randomTransactionId();
+        }
+    }
+
     pub fn addFingerprint(self: *Self) void {
         self.has_fingerprint = true;
     }
 
-    pub fn addMessageIntegrity(self: *Self, message_integrity_type: MessageIntegrityType) void {
-        self.message_integrity_type = message_integrity_type;
+    pub fn addMessageIntegrity(self: *Self, parameters: auth.Authentication) void {
+        self.message_integrity = parameters;
+    }
+
+    pub fn addMessageIntegritySha256(self: *Self, parameters: auth.Authentication) void {
+        self.message_integrity_sha256 = parameters;
     }
 
     fn addGenericAttribute(self: *Self, attribute: GenericAttribute) !void {
@@ -347,7 +397,7 @@ pub const MessageBuilder = struct {
     pub fn addAttribute(self: *Self, attribute: Attribute) !void {
         switch (attribute) {
             .fingerprint, .message_integrity, .message_integrity_sha256 => return error.InvalidAttribute,
-            else => try self.addGenericAttribute(GenericAttribute{ .known = attribute }),
+            else => try self.addAttributeInternal(attribute),
         }
     }
 
@@ -356,16 +406,46 @@ pub const MessageBuilder = struct {
     }
 
     fn isValid(self: *const Self) bool {
-        return self.class != null and self.method != null and self.transaction_id != null;
+        if (self.class == null or self.method == null or self.transaction_id == null) return false;
+        return true;
+    }
+
+    fn addAttributeInternal(self: *Self, attribute: Attribute) !void {
+        try self.addGenericAttribute(GenericAttribute{ .known = attribute });
+    }
+
+    fn computeMessageIntegrity(self: *Self, parameters: auth.Authentication, allocator: std.mem.Allocator) !void {
+        var storage: [20]u8 = undefined;
+        const hmac_key = parameters.computeKey(&storage) catch unreachable;
+        const message = Message.fromParts(self.class.?, self.method.?, self.transaction_id.?, self.attribute_list.items);
+        const hmac = message.computeMessageIntegrity(allocator, &storage, hmac_key) catch unreachable;
+        try self.addAttributeInternal(.{ .message_integrity = .{ .value = hmac[0..20].* } });
+    }
+
+    fn computeMessageIntegritySha256(self: *Self, parameters: auth.Authentication, allocator: std.mem.Allocator) !void {
+        var storage: [32]u8 = undefined;
+        const hmac_key = parameters.computeKey(&storage) catch unreachable;
+        const message = Message.fromParts(self.class.?, self.method.?, self.transaction_id.?, self.attribute_list.items);
+        const hmac = message.computeMessageIntegritySha256(allocator, &storage, hmac_key) catch unreachable;
+        try self.addAttributeInternal(.{ .message_integrity_sha256 = attr.MessageIntegritySha256.fromRaw(hmac) catch unreachable });
     }
 
     pub fn build(self: *Self) !Message {
         if (!self.isValid()) return error.InvalidMessage;
+        var buffer: [2048]u8 = undefined;
+        var arena_state = std.heap.FixedBufferAllocator.init(&buffer);
+
+        if (self.message_integrity) |parameters| {
+            try self.computeMessageIntegrity(parameters, arena_state.allocator());
+        }
+
+        if (self.message_integrity_sha256) |parameters| {
+            try self.computeMessageIntegritySha256(parameters, arena_state.allocator());
+        }
+
         if (self.has_fingerprint) {
-            var buffer: [2048]u8 = undefined;
-            var arena_state = std.heap.FixedBufferAllocator.init(&buffer);
-            const fingerprint = Message.fromParts(self.class.?, self.method.?, self.transaction_id.?, self.attribute_list.items).computeFingerprint(arena_state.allocator()) catch unreachable;
-            const attribute = GenericAttribute{ .known = @unionInit(Attribute, "fingerprint", .{ .value = fingerprint }) };
+            const fingerprint = try Message.fromParts(self.class.?, self.method.?, self.transaction_id.?, self.attribute_list.items).computeFingerprint(arena_state.allocator());
+            const attribute = GenericAttribute{ .known = Attribute{ .fingerprint = .{ .value = fingerprint } } };
             try self.attribute_list.append(attribute);
         }
 
@@ -453,7 +533,7 @@ test "integer to message type" {
 test "attribute size" {
     const software_attribute = attr.Software{ .value = "abc" };
     const attribute = Attribute{ .software = software_attribute };
-    try std.testing.expectEqual(@as(usize, 4), software_attribute.size());
+    try std.testing.expectEqual(@as(usize, 3), software_attribute.size());
     try std.testing.expectEqual(@as(usize, 8), attribute.size());
 }
 
@@ -511,28 +591,4 @@ test "try to deserialize a message" {
     try std.testing.expectEqual(@as(u16, 0x0032), message.attributes[0].raw.value);
     try std.testing.expectEqual(@as(u16, 0x0004), message.attributes[0].raw.length);
     try std.testing.expectEqualSlices(u8, &.{ 0x01, 0x02, 0x03, 0x04 }, message.attributes[0].raw.data);
-}
-
-test "UNKNOWN-ATTRIBUTES deserialization" {
-    const buffer = [_]u8{
-        // Type
-        0x00, 0x0A,
-        // Length
-        0x00, 0x06,
-        // UnknownAttributes
-        0x00, 0x02,
-        0x00, 0x03,
-        0x00, 0x04,
-        // Padding
-        0x00, 0x00,
-    };
-
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-
-    var stream = std.io.fixedBufferStream(&buffer);
-
-    const attribute = try Attribute.deserialize(stream.reader(), arena_state.allocator());
-    try std.testing.expect(attribute == .unknown_attributes);
-    try std.testing.expectEqualSlices(u16, &[_]u16{ 0x0002, 0x0003, 0x0004 }, attribute.unknown_attributes.attribute_types);
 }

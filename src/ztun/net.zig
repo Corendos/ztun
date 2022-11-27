@@ -231,7 +231,6 @@ test "parse IPv6" {
     }
     {
         const address = try Ipv6Address.parse("::1", 8888);
-        std.log.warn("{}", .{address});
         try std.testing.expectEqual(@as(u128, 0x0000_0000_0000_0000_0000_0000_0000_0001), address.value);
         try std.testing.expectEqual(@as(u16, 8888), address.port);
         try std.testing.expectEqual(@as(u32, 0), address.scope_id);
