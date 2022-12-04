@@ -3,167 +3,236 @@
 
 const std = @import("std");
 const io = @import("io.zig");
+
 const magic_cookie = @import("constants.zig").magic_cookie;
 
-pub fn isComprehensionRequiredRaw(value: u16) bool {
+pub const Attribute = struct {
+    type: u16,
+    data: []const u8,
+
+    pub fn length(self: Attribute) usize {
+        return 4 + std.mem.alignForward(self.data.len, 4);
+    }
+};
+
+pub const Type = struct {
+    pub const mapped_address = 0x0001;
+    pub const xor_mapped_address = 0x0020;
+    pub const username = 0x0006;
+    pub const userhash = 0x001E;
+    pub const message_integrity = 0x0008;
+    pub const message_integrity_sha256 = 0x001C;
+    pub const fingerprint = 0x8028;
+    pub const error_code = 0x0009;
+    pub const realm = 0x0014;
+    pub const nonce = 0x0015;
+    pub const password_algorithms = 0x8002;
+    pub const password_algorithm = 0x001D;
+    pub const unknown_attributes = 0x000A;
+    pub const software = 0x8022;
+    pub const alternate_server = 0x8023;
+    pub const alternate_domain = 0x8003;
+};
+
+pub inline fn isComprehensionRequired(value: u16) bool {
     return 0x000 <= value and value < 0x8000;
 }
 
-pub fn isComprehensionOptionalRaw(value: u16) bool {
-    return !isComprehensionRequiredRaw(value);
+pub inline fn isComprehensionOptional(value: u16) bool {
+    return !isComprehensionRequired(value);
 }
 
-pub const Type = enum(u16) {
-    mapped_address = 0x0001,
-    xor_mapped_address = 0x0020,
-    username = 0x0006,
-    userhash = 0x001E,
-    message_integrity = 0x0008,
-    message_integrity_sha256 = 0x001C,
-    fingerprint = 0x8028,
-    error_code = 0x0009,
-    realm = 0x0014,
-    nonce = 0x0015,
-    password_algorithms = 0x8002,
-    password_algorithm = 0x001D,
-    unknown_attributes = 0x000A,
-    software = 0x8022,
-    alternate_server = 0x8023,
-    alternate_domain = 0x8003,
+pub fn write(attribute: Attribute, writer: anytype) !void {
+    try writer.writeIntBig(u16, attribute.type);
+    try writer.writeIntBig(u16, @intCast(u16, attribute.data.len));
+    try io.writeAllAligned(attribute.data, 4, writer);
+}
 
-    pub fn isComprehensionRequired(self: Type) bool {
-        return isComprehensionRequiredRaw(@enumToInt(self));
-    }
+pub fn readAlloc(reader: anytype, allocator: std.mem.Allocator) !Attribute {
+    const @"type" = try reader.readIntBig(u16);
+    const len = try reader.readIntBig(u16);
+    var data = try allocator.alloc(u8, len);
+    errdefer allocator.free(data);
 
-    pub fn isComprehensionOptional(self: Type) bool {
-        return isComprehensionOptionalRaw(@enumToInt(self));
-    }
-};
+    try io.readNoEofAligned(reader, 4, data);
+    return Attribute{ .type = @"type", .data = data };
+}
 
-pub const AddressFamilyType = enum(u8) {
-    ipv4 = 0x01,
-    ipv6 = 0x02,
-};
+test "write attribute" {
+    const attribute = Attribute{
+        .type = 0x0042,
+        .data = &[_]u8{ 1, 2, 3 },
+    };
 
-pub const AddressFamily = union(AddressFamilyType) {
-    ipv4: u32,
-    ipv6: u128,
+    var buffer: [128]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buffer);
 
-    pub fn size(self: AddressFamily) usize {
-        return switch (self) {
-            .ipv4 => 4,
-            .ipv6 => 16,
-        };
-    }
-};
+    try write(attribute, stream.writer());
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x42, 0x00, 0x03, 0x01, 0x02, 0x03, 0x00 }, stream.getWritten());
+}
 
-pub const MappedAddress = struct {
-    family: AddressFamily,
-    port: u16,
+test "read attribute" {
+    const raw = [_]u8{ 0x00, 0x42, 0x00, 0x03, 0x01, 0x02, 0x03, 0x00 };
 
-    pub fn alignedSize(self: *const MappedAddress) usize {
-        return std.mem.alignForward(self.size(), 4);
-    }
+    var stream = std.io.fixedBufferStream(&raw);
 
-    pub fn size(self: *const MappedAddress) usize {
-        return 4 + self.family.size();
-    }
+    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    defer std.testing.allocator.free(attribute.data);
+    try std.testing.expectEqual(@as(u16, 0x042), attribute.type);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3 }, attribute.data);
+}
 
-    pub fn serialize(self: *const MappedAddress, writer: anytype) !void {
-        try writer.writeByte(0);
-        switch (self.family) {
-            inline else => |address, family| {
-                try writer.writeByte(@enumToInt(family));
-                try writer.writeIntBig(u16, self.port);
-                try writer.writeIntBig(@TypeOf(address), address);
-            },
+pub const common = struct {
+    pub const AddressFamilyType = enum(u8) {
+        ipv4 = 0x01,
+        ipv6 = 0x02,
+    };
+
+    pub const AddressFamily = union(AddressFamilyType) {
+        ipv4: u32,
+        ipv6: u128,
+        pub fn format(self: AddressFamily, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+            switch (self) {
+                .ipv4 => |value| {
+                    const endian_corrected_value = std.mem.nativeToBig(u32, value);
+                    var bytes = std.mem.asBytes(&endian_corrected_value);
+                    try writer.print("{}.{}.{}.{}", .{ bytes[0], bytes[1], bytes[2], bytes[3] });
+                },
+                .ipv6 => |value| {
+                    const endian_corrected_value = std.mem.nativeToBig(u128, value);
+                    var bytes = std.mem.asBytes(&endian_corrected_value);
+                    try writer.print("{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}", .{
+                        bytes[0],  bytes[1],
+                        bytes[2],  bytes[3],
+                        bytes[4],  bytes[5],
+                        bytes[6],  bytes[7],
+                        bytes[8],  bytes[9],
+                        bytes[10], bytes[11],
+                        bytes[12], bytes[13],
+                        bytes[14], bytes[15],
+                    });
+                },
+            }
+            _ = options;
+            _ = fmt;
         }
-    }
+    };
 
-    pub fn deserializeAlloc(reader: anytype, length: usize, allocator: std.mem.Allocator) !MappedAddress {
-        _ = allocator;
-        _ = length;
-        return deserialize(reader);
-    }
+    pub const MappedAddress = struct {
+        family: AddressFamily,
+        port: u16,
 
-    pub fn deserialize(reader: anytype) !MappedAddress {
-        if (try reader.readByte() != 0x00) return error.InvalidAttributeFormat;
-        const raw_family_type = try reader.readByte();
-        const family_type = std.meta.intToEnum(AddressFamilyType, raw_family_type) catch return error.InvalidAttributeFormat;
-        const port = try reader.readIntBig(u16);
+        pub fn fromAttribute(attribute: Attribute) !MappedAddress {
+            if (attribute.type != Type.mapped_address) return error.InvalidAttribute;
 
-        const family = switch (family_type) {
-            .ipv4 => AddressFamily{ .ipv4 = try reader.readIntBig(u32) },
-            .ipv6 => AddressFamily{ .ipv6 = try reader.readIntBig(u128) },
-        };
-
-        return MappedAddress{
-            .family = family,
-            .port = port,
-        };
-    }
-
-    pub fn deinit(self: *const MappedAddress, allocator: std.mem.Allocator) void {
-        _ = allocator;
-        _ = self;
-    }
-};
-
-pub const XorMappedAddress = struct {
-    x_family: AddressFamily,
-    x_port: u16,
-
-    pub fn alignedSize(self: *const XorMappedAddress) usize {
-        return std.mem.alignForward(self.size(), 4);
-    }
-
-    pub fn size(self: *const XorMappedAddress) usize {
-        return 4 + self.x_family.size();
-    }
-
-    pub fn serialize(self: *const XorMappedAddress, writer: anytype) !void {
-        try writer.writeByte(0);
-        switch (self.x_family) {
-            inline else => |address, family| {
-                try writer.writeByte(@enumToInt(family));
-                try writer.writeIntBig(u16, self.x_port);
-                try writer.writeIntBig(@TypeOf(address), address);
-            },
+            var stream = std.io.fixedBufferStream(attribute.data);
+            var reader = stream.reader();
+            _ = try reader.readByte();
+            const raw_family_type = reader.readByte() catch return error.InvalidAttribute;
+            const family_type = std.meta.intToEnum(AddressFamilyType, raw_family_type) catch return error.InvalidAttribute;
+            const port: u16 = reader.readIntBig(u16) catch return error.InvalidAttribute;
+            switch (family_type) {
+                .ipv4 => {
+                    const raw_address = reader.readIntBig(u32) catch return error.InvalidAttribute;
+                    return MappedAddress{ .family = .{ .ipv4 = raw_address }, .port = port };
+                },
+                .ipv6 => {
+                    const raw_address = reader.readIntBig(u128) catch return error.InvalidAttribute;
+                    return MappedAddress{ .family = .{ .ipv6 = raw_address }, .port = port };
+                },
+            }
         }
-    }
 
-    pub fn deserializeAlloc(reader: anytype, length: usize, allocator: std.mem.Allocator) !XorMappedAddress {
-        _ = allocator;
-        _ = length;
-        return deserialize(reader);
-    }
+        pub fn toAttribute(self: MappedAddress, allocator: std.mem.Allocator) !Attribute {
+            const data_size = 4 + @as(usize, switch (self.family) {
+                .ipv4 => 4,
+                .ipv6 => 16,
+            });
+            var data = try allocator.alloc(u8, data_size);
+            errdefer allocator.free(data);
 
-    pub fn deserialize(reader: anytype) !XorMappedAddress {
-        if (try reader.readByte() != 0x00) return error.InvalidAttributeFormat;
-        const raw_family_type = try reader.readByte();
-        const family_type = std.meta.intToEnum(AddressFamilyType, raw_family_type) catch return error.InvalidAttributeFormat;
-        const x_port = try reader.readIntBig(u16);
+            var stream = std.io.fixedBufferStream(data);
+            var writer = stream.writer();
+            writer.writeByte(0) catch unreachable;
+            writer.writeByte(@enumToInt(self.family)) catch unreachable;
+            writer.writeIntBig(u16, self.port) catch unreachable;
+            switch (self.family) {
+                .ipv4 => |value| writer.writeIntBig(u32, value) catch unreachable,
+                .ipv6 => |value| writer.writeIntBig(u128, value) catch unreachable,
+            }
 
-        const x_family = switch (family_type) {
-            .ipv4 => AddressFamily{ .ipv4 = try reader.readIntBig(u32) },
-            .ipv6 => AddressFamily{ .ipv6 = try reader.readIntBig(u128) },
+            return Attribute{ .type = Type.mapped_address, .data = data };
+        }
+    };
+
+    pub const XorMappedAddress = struct {
+        x_family: AddressFamily,
+        x_port: u16,
+
+        pub fn fromAttribute(attribute: Attribute) !XorMappedAddress {
+            if (attribute.type != Type.xor_mapped_address) return error.InvalidAttribute;
+
+            var stream = std.io.fixedBufferStream(attribute.data);
+            var reader = stream.reader();
+            _ = try reader.readByte();
+            const raw_x_family_type = reader.readByte() catch return error.InvalidAttribute;
+            const x_family_type = std.meta.intToEnum(AddressFamilyType, raw_x_family_type) catch return error.InvalidAttribute;
+            const x_port: u16 = reader.readIntBig(u16) catch return error.InvalidAttribute;
+            switch (x_family_type) {
+                .ipv4 => {
+                    const raw_address = reader.readIntBig(u32) catch return error.InvalidAttribute;
+                    return XorMappedAddress{ .x_family = .{ .ipv4 = raw_address }, .x_port = x_port };
+                },
+                .ipv6 => {
+                    const raw_address = reader.readIntBig(u128) catch return error.InvalidAttribute;
+                    return XorMappedAddress{ .x_family = .{ .ipv6 = raw_address }, .x_port = x_port };
+                },
+            }
+        }
+
+        pub fn toAttribute(self: XorMappedAddress, allocator: std.mem.Allocator) !Attribute {
+            const data_size = 4 + @as(usize, switch (self.x_family) {
+                .ipv4 => 4,
+                .ipv6 => 16,
+            });
+            var data = try allocator.alloc(u8, data_size);
+            errdefer allocator.free(data);
+
+            var stream = std.io.fixedBufferStream(data);
+            var writer = stream.writer();
+            writer.writeByte(0) catch unreachable;
+            writer.writeByte(@enumToInt(self.x_family)) catch unreachable;
+            writer.writeIntBig(u16, self.x_port) catch unreachable;
+            switch (self.x_family) {
+                .ipv4 => |value| writer.writeIntBig(u32, value) catch unreachable,
+                .ipv6 => |value| writer.writeIntBig(u128, value) catch unreachable,
+            }
+
+            return Attribute{ .type = Type.xor_mapped_address, .data = data };
+        }
+    };
+
+    pub fn encode(mapped_address: MappedAddress, transaction_id: u96) XorMappedAddress {
+        const x_port = mapped_address.port ^ @truncate(u16, (magic_cookie & 0xFFFF0000) >> 16);
+
+        const x_family = switch (mapped_address.family) {
+            .ipv4 => |address| AddressFamily{ .ipv4 = address ^ @as(u32, magic_cookie) },
+            .ipv6 => |address| blk: {
+                const mask: u128 = @as(u128, magic_cookie) << 96 | @as(u128, transaction_id);
+                break :blk AddressFamily{ .ipv6 = address ^ mask };
+            },
         };
 
         return XorMappedAddress{
-            .x_family = x_family,
             .x_port = x_port,
+            .x_family = x_family,
         };
     }
 
-    pub fn deinit(self: *const XorMappedAddress, allocator: std.mem.Allocator) void {
-        _ = allocator;
-        _ = self;
-    }
+    pub fn decode(xor_mapped_address: XorMappedAddress, transaction_id: u96) MappedAddress {
+        const port = xor_mapped_address.x_port ^ @truncate(u16, (magic_cookie & 0xFFFF0000) >> 16);
 
-    pub fn decode(self: *const XorMappedAddress, transaction_id: u96) MappedAddress {
-        const port = self.x_port ^ @truncate(u16, (magic_cookie & 0xFFFF0000) >> 16);
-
-        const family = switch (self.x_family) {
+        const family = switch (xor_mapped_address.x_family) {
             .ipv4 => |address| AddressFamily{ .ipv4 = address ^ @as(u32, magic_cookie) },
             .ipv6 => |address| blk: {
                 const mask: u128 = @as(u128, magic_cookie) << 96 | @as(u128, transaction_id);
@@ -177,610 +246,925 @@ pub const XorMappedAddress = struct {
         };
     }
 
-    pub fn encode(mapped_address_attribute: MappedAddress, transaction_id: u96) XorMappedAddress {
-        const x_port = mapped_address_attribute.port ^ @truncate(u16, (magic_cookie & 0xFFFF0000) >> 16);
+    pub const Username = struct {
+        value: []const u8,
 
-        const x_family = switch (mapped_address_attribute.family) {
-            .ipv4 => |address| AddressFamily{ .ipv4 = address ^ @as(u32, magic_cookie) },
-            .ipv6 => |address| blk: {
-                const mask: u128 = @as(u128, magic_cookie) << 96 | @as(u128, transaction_id);
-                break :blk AddressFamily{ .ipv6 = address ^ mask };
-            },
-        };
+        pub fn fromAttribute(attribute: Attribute) !Username {
+            if (attribute.type != Type.username) return error.InvalidAttribute;
 
-        return XorMappedAddress{
-            .x_port = x_port,
-            .x_family = x_family,
-        };
+            return Username{ .value = attribute.data };
+        }
+
+        pub fn toAttribute(self: Username, allocator: std.mem.Allocator) !Attribute {
+            return Attribute{ .type = Type.username, .data = try allocator.dupe(u8, self.value) };
+        }
+    };
+
+    pub const Userhash = struct {
+        value: [32]u8,
+
+        pub fn fromAttribute(attribute: Attribute) !Userhash {
+            if (attribute.type != Type.userhash) return error.InvalidAttribute;
+            if (attribute.data.len != 32) return error.InvalidAttribute;
+            var self: Userhash = undefined;
+            std.mem.copy(u8, &self.value, attribute.data);
+            return self;
+        }
+
+        pub fn toAttribute(self: Userhash, allocator: std.mem.Allocator) !Attribute {
+            var data = try allocator.alloc(u8, self.value.len);
+            errdefer allocator.free(data);
+
+            std.mem.copy(u8, data, &self.value);
+
+            return Attribute{ .type = Type.userhash, .data = data };
+        }
+    };
+
+    pub const MessageIntegrity = struct {
+        value: [20]u8,
+
+        pub fn fromAttribute(attribute: Attribute) !MessageIntegrity {
+            if (attribute.type != Type.message_integrity) return error.InvalidAttribute;
+            if (attribute.data.len != 20) return error.InvalidAttribute;
+            var self: MessageIntegrity = undefined;
+            std.mem.copy(u8, &self.value, attribute.data);
+            return self;
+        }
+
+        pub fn toAttribute(self: MessageIntegrity, allocator: std.mem.Allocator) !Attribute {
+            var data = try allocator.alloc(u8, self.value.len);
+            errdefer allocator.free(data);
+
+            std.mem.copy(u8, data, &self.value);
+
+            return Attribute{ .type = Type.message_integrity, .data = data };
+        }
+    };
+
+    pub const MessageIntegritySha256 = struct {
+        storage: [32]u8,
+        length: usize,
+
+        pub fn fromAttribute(attribute: Attribute) !MessageIntegritySha256 {
+            if (attribute.type != Type.message_integrity_sha256) return error.InvalidAttribute;
+            if (attribute.data.len > 32) return error.InvalidAttribute;
+            var self = MessageIntegritySha256{
+                .storage = undefined,
+                .length = attribute.data.len,
+            };
+            std.mem.copy(u8, self.storage[0..attribute.data.len], attribute.data);
+            return self;
+        }
+
+        pub fn toAttribute(self: MessageIntegritySha256, allocator: std.mem.Allocator) !Attribute {
+            var data = try allocator.alloc(u8, self.length);
+            errdefer allocator.free(data);
+
+            std.mem.copy(u8, data, self.storage[0..self.length]);
+
+            return Attribute{ .type = Type.message_integrity_sha256, .data = data };
+        }
+    };
+
+    pub const Fingerprint = struct {
+        value: u32,
+
+        pub fn fromAttribute(attribute: Attribute) !Fingerprint {
+            if (attribute.type != Type.fingerprint) return error.InvalidAttribute;
+            var stream = std.io.fixedBufferStream(attribute.data);
+            var reader = stream.reader();
+
+            var value = reader.readIntBig(u32) catch return error.InvalidAttribute;
+            return Fingerprint{
+                .value = value,
+            };
+        }
+
+        pub fn toAttribute(self: Fingerprint, allocator: std.mem.Allocator) !Attribute {
+            var data = try allocator.alloc(u8, 4);
+            errdefer allocator.free(data);
+
+            var stream = std.io.fixedBufferStream(data);
+            var writer = stream.writer();
+
+            writer.writeIntBig(u32, self.value) catch unreachable;
+
+            return Attribute{ .type = Type.fingerprint, .data = data };
+        }
+    };
+
+    fn rawErrorCodeFromClassAndNumber(class: u3, number: u8) u32 {
+        var value: u32 = 0;
+        value |= @intCast(u32, class) << 8;
+        value |= @intCast(u32, number);
+
+        return value;
     }
+
+    pub const RawErrorCode = enum(u32) {
+        try_alternate = rawErrorCodeFromClassAndNumber(3, 0),
+        bad_request = rawErrorCodeFromClassAndNumber(4, 0),
+        unauthenticated = rawErrorCodeFromClassAndNumber(4, 1),
+        unknown_attribute = rawErrorCodeFromClassAndNumber(4, 20),
+        stale_nonce = rawErrorCodeFromClassAndNumber(4, 38),
+        server_error = rawErrorCodeFromClassAndNumber(5, 0),
+
+        pub inline fn class(self: RawErrorCode) u3 {
+            return @intCast(u3, @as(u32, @enumToInt(self)) & 0b11100000000 >> 8);
+        }
+
+        pub inline fn number(self: RawErrorCode) u8 {
+            return @intCast(u8, @as(u32, @enumToInt(self)) & 0xFF);
+        }
+    };
+
+    pub const ErrorCode = struct {
+        value: RawErrorCode,
+        reason: []const u8,
+
+        pub fn fromAttribute(attribute: Attribute) !ErrorCode {
+            if (attribute.type != Type.error_code) return error.InvalidAttribute;
+            var stream = std.io.fixedBufferStream(attribute.data);
+            var reader = stream.reader();
+
+            _ = reader.readIntBig(u16) catch return error.InvalidAttribute;
+            const raw_class = reader.readByte() catch return error.InvalidAttribute;
+            const raw_number = reader.readByte() catch return error.InvalidAttribute;
+            const raw_error_code = std.meta.intToEnum(RawErrorCode, rawErrorCodeFromClassAndNumber(@intCast(u3, raw_class), raw_number)) catch return error.InvalidAttribute;
+
+            const reason = stream.buffer[stream.pos..];
+
+            return ErrorCode{ .value = raw_error_code, .reason = reason };
+        }
+
+        pub fn toAttribute(self: ErrorCode, allocator: std.mem.Allocator) !Attribute {
+            var data = try allocator.alloc(u8, 4 + self.reason.len);
+            errdefer allocator.free(data);
+
+            var stream = std.io.fixedBufferStream(data);
+            var writer = stream.writer();
+
+            writer.writeIntBig(u32, @enumToInt(self.value)) catch unreachable;
+            writer.writeAll(self.reason) catch unreachable;
+
+            return Attribute{ .type = Type.error_code, .data = data };
+        }
+    };
+
+    pub const Realm = struct {
+        value: []const u8,
+
+        pub fn fromAttribute(attribute: Attribute) !Realm {
+            if (attribute.type != Type.realm) return error.InvalidAttribute;
+
+            return Realm{ .value = attribute.data };
+        }
+
+        pub fn toAttribute(self: Realm, allocator: std.mem.Allocator) !Attribute {
+            return Attribute{ .type = Type.realm, .data = try allocator.dupe(u8, self.value) };
+        }
+    };
+
+    pub const Nonce = struct {
+        value: []const u8,
+
+        pub fn fromAttribute(attribute: Attribute) !Nonce {
+            if (attribute.type != Type.nonce) return error.InvalidAttribute;
+
+            return Nonce{ .value = attribute.data };
+        }
+
+        pub fn toAttribute(self: Nonce, allocator: std.mem.Allocator) !Attribute {
+            return Attribute{ .type = Type.nonce, .data = try allocator.dupe(u8, self.value) };
+        }
+    };
+
+    pub const AlgorithmType = struct {
+        pub const md5 = 0x0001;
+        pub const sha256 = 0x0002;
+    };
+
+    pub const Algorithm = struct {
+        type: u16,
+        parameters: []const u8,
+    };
+
+    pub const PasswordAlgorithms = struct {
+        algorithms: []Algorithm,
+
+        pub fn fromAttribute(attribute: Attribute, allocator: std.mem.Allocator) !PasswordAlgorithms {
+            if (attribute.type != Type.password_algorithms) return error.InvalidAttribute;
+
+            var stream = std.io.fixedBufferStream(attribute.data);
+            var reader = stream.reader();
+
+            var algorithms_count: usize = 0;
+            while (stream.pos < stream.buffer.len) : (algorithms_count += 1) {
+                _ = reader.readIntBig(u16) catch return error.InvalidAttribute;
+                const length = reader.readIntBig(u16) catch return error.InvalidAttribute;
+                const aligned_length = std.mem.alignForward(length, 4);
+                reader.skipBytes(aligned_length, .{}) catch return error.InvalidAttribute;
+            }
+
+            var algorithms = try allocator.alloc(Algorithm, algorithms_count);
+            errdefer allocator.free(algorithms);
+
+            stream.reset();
+            for (algorithms) |*algorithm| {
+                const @"type" = reader.readIntBig(u16) catch return error.InvalidAttribute;
+                const length = reader.readIntBig(u16) catch return error.InvalidAttribute;
+                const aligned_length = std.mem.alignForward(length, 4);
+                algorithm.type = @"type";
+                algorithm.parameters = stream.buffer[stream.pos .. stream.pos + length];
+                reader.skipBytes(aligned_length, .{}) catch return error.InvalidAttribute;
+            }
+
+            return PasswordAlgorithms{ .algorithms = algorithms };
+        }
+
+        pub fn toAttribute(self: PasswordAlgorithms, allocator: std.mem.Allocator) !Attribute {
+            var data_size: usize = 0;
+            for (self.algorithms) |algorithm| {
+                data_size += 4 + std.mem.alignForward(algorithm.parameters.len, 4);
+            }
+            var data = try allocator.alloc(u8, data_size);
+            errdefer allocator.free(data);
+
+            var stream = std.io.fixedBufferStream(data);
+            var writer = stream.writer();
+
+            for (self.algorithms) |algorithm| {
+                writer.writeIntBig(u16, algorithm.type) catch unreachable;
+                writer.writeIntBig(u16, @intCast(u16, algorithm.parameters.len)) catch unreachable;
+                io.writeAllAligned(algorithm.parameters, 4, writer) catch unreachable;
+            }
+
+            return Attribute{ .type = Type.password_algorithms, .data = data };
+        }
+    };
+
+    pub const PasswordAlgorithm = struct {
+        algorithm: Algorithm,
+
+        pub fn fromAttribute(attribute: Attribute) !PasswordAlgorithm {
+            if (attribute.type != Type.password_algorithm) return error.InvalidAttribute;
+
+            var stream = std.io.fixedBufferStream(attribute.data);
+            var reader = stream.reader();
+
+            const @"type" = reader.readIntBig(u16) catch return error.InvalidAttribute;
+            const length = reader.readIntBig(u16) catch return error.InvalidAttribute;
+            const aligned_length = std.mem.alignForward(length, 4);
+            const algorithm = Algorithm{
+                .type = @"type",
+                .parameters = stream.buffer[stream.pos .. stream.pos + length],
+            };
+            reader.skipBytes(aligned_length, .{}) catch return error.InvalidAttribute;
+
+            return PasswordAlgorithm{ .algorithm = algorithm };
+        }
+
+        pub fn toAttribute(self: PasswordAlgorithm, allocator: std.mem.Allocator) !Attribute {
+            var data = try allocator.alloc(u8, 4 + std.mem.alignForward(self.algorithm.parameters.len, 4));
+            errdefer allocator.free(data);
+
+            var stream = std.io.fixedBufferStream(data);
+            var writer = stream.writer();
+
+            writer.writeIntBig(u16, self.algorithm.type) catch unreachable;
+            writer.writeIntBig(u16, @intCast(u16, self.algorithm.parameters.len)) catch unreachable;
+            io.writeAllAligned(self.algorithm.parameters, 4, writer) catch unreachable;
+
+            return Attribute{ .type = Type.password_algorithm, .data = data };
+        }
+    };
+
+    pub const UnknownAttributes = struct {
+        attribute_types: []u16,
+
+        pub fn fromAttribute(attribute: Attribute, allocator: std.mem.Allocator) !UnknownAttributes {
+            if (attribute.type != Type.unknown_attributes) return error.InvalidAttribute;
+
+            var attribute_types = try allocator.alloc(u16, attribute.data.len / 2);
+            errdefer allocator.free(attribute_types);
+
+            var stream = std.io.fixedBufferStream(attribute.data);
+            var reader = stream.reader();
+
+            for (attribute_types) |*attribute_type| {
+                attribute_type.* = reader.readIntBig(u16) catch return error.InvalidAttribute;
+            }
+
+            return UnknownAttributes{ .attribute_types = attribute_types };
+        }
+
+        pub fn toAttribute(self: UnknownAttributes, allocator: std.mem.Allocator) !Attribute {
+            var data = try allocator.alloc(u8, self.attribute_types.len * 2);
+            errdefer allocator.free(data);
+
+            var stream = std.io.fixedBufferStream(data);
+            var writer = stream.writer();
+
+            for (self.attribute_types) |attribute_type| {
+                writer.writeIntBig(u16, attribute_type) catch unreachable;
+            }
+
+            return Attribute{ .type = Type.unknown_attributes, .data = data };
+        }
+    };
+
+    pub const Software = struct {
+        value: []const u8,
+
+        pub fn fromAttribute(attribute: Attribute) !Software {
+            if (attribute.type != Type.software) return error.InvalidAttribute;
+
+            return Software{ .value = attribute.data };
+        }
+
+        pub fn toAttribute(self: Software, allocator: std.mem.Allocator) !Attribute {
+            return Attribute{ .type = Type.software, .data = try allocator.dupe(u8, self.value) };
+        }
+    };
+
+    pub const AlternateServer = struct {
+        family: AddressFamily,
+        port: u16,
+
+        pub fn fromAttribute(attribute: Attribute) !AlternateServer {
+            if (attribute.type != Type.alternate_server) return error.InvalidAttribute;
+
+            var stream = std.io.fixedBufferStream(attribute.data);
+            var reader = stream.reader();
+            _ = try reader.readByte();
+            const raw_family_type = reader.readByte() catch return error.InvalidAttribute;
+            const family_type = std.meta.intToEnum(AddressFamilyType, raw_family_type) catch return error.InvalidAttribute;
+            const port: u16 = reader.readIntBig(u16) catch return error.InvalidAttribute;
+            switch (family_type) {
+                .ipv4 => {
+                    const raw_address = reader.readIntBig(u32) catch return error.InvalidAttribute;
+                    return AlternateServer{ .family = .{ .ipv4 = raw_address }, .port = port };
+                },
+                .ipv6 => {
+                    const raw_address = reader.readIntBig(u128) catch return error.InvalidAttribute;
+                    return AlternateServer{ .family = .{ .ipv6 = raw_address }, .port = port };
+                },
+            }
+        }
+
+        pub fn toAttribute(self: AlternateServer, allocator: std.mem.Allocator) !Attribute {
+            const data_size = 4 + @as(usize, switch (self.family) {
+                .ipv4 => 4,
+                .ipv6 => 16,
+            });
+            var data = try allocator.alloc(u8, data_size);
+            errdefer allocator.free(data);
+
+            var stream = std.io.fixedBufferStream(data);
+            var writer = stream.writer();
+            writer.writeByte(0) catch unreachable;
+            writer.writeByte(@enumToInt(self.family)) catch unreachable;
+            writer.writeIntBig(u16, self.port) catch unreachable;
+            switch (self.family) {
+                .ipv4 => |value| writer.writeIntBig(u32, value) catch unreachable,
+                .ipv6 => |value| writer.writeIntBig(u128, value) catch unreachable,
+            }
+
+            return Attribute{ .type = Type.alternate_server, .data = data };
+        }
+    };
+
+    pub const AlternateDomain = struct {
+        value: []const u8,
+
+        pub fn fromAttribute(attribute: Attribute) !AlternateDomain {
+            if (attribute.type != Type.alternate_domain) return error.InvalidAttribute;
+
+            return AlternateDomain{ .value = attribute.data };
+        }
+
+        pub fn toAttribute(self: AlternateDomain, allocator: std.mem.Allocator) !Attribute {
+            return Attribute{ .type = Type.alternate_domain, .data = try allocator.dupe(u8, self.value) };
+        }
+    };
 };
 
-pub const Username = struct {
-    value: []const u8,
+test "MAPPED-ADDRESS deserialization" {
+    const buffer = [_]u8{
+        // Header
+        0x00, 0x01,
+        0x00, 0x08,
+        // Padding
+        0x00,
+        // Family type
+        0x01,
+        // Port
+        0x01, 0x02,
+        // Address
+        127,  0,
+        0,    1,
+    };
+    var stream = std.io.fixedBufferStream(&buffer);
+    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    defer std.testing.allocator.free(attribute.data);
 
-    pub fn alignedSize(self: *const Username) usize {
-        return std.mem.alignForward(self.size(), 4);
-    }
+    var mapped_address_attribute = try common.MappedAddress.fromAttribute(attribute);
 
-    pub fn size(self: *const Username) usize {
-        return self.value.len;
-    }
-
-    pub fn serialize(self: *const Username, writer: anytype) !void {
-        try io.writeAllAligned(self.value, 4, writer);
-    }
-
-    pub fn deserializeAlloc(reader: anytype, length: usize, allocator: std.mem.Allocator) !Username {
-        var buffer = try allocator.alloc(u8, length);
-        errdefer allocator.free(buffer);
-
-        return Username.deserialize(reader, buffer);
-    }
-
-    pub fn deserialize(reader: anytype, buf: []u8) !Username {
-        try io.readNoEofAligned(reader, 4, buf);
-        return Username{ .value = buf };
-    }
-
-    pub fn deinit(self: *const Username, allocator: std.mem.Allocator) void {
-        allocator.free(self.value);
-    }
-};
-
-pub const Userhash = struct {
-    value: [32]u8,
-
-    pub fn alignedSize(self: *const Userhash) usize {
-        return std.mem.alignForward(self.size(), 4);
-    }
-
-    pub fn size(self: *const Userhash) usize {
-        return self.value.len;
-    }
-
-    pub fn serialize(self: *const Userhash, writer: anytype) !void {
-        try writer.writeAll(&self.value);
-    }
-
-    pub fn deserializeAlloc(reader: anytype, length: usize, allocator: std.mem.Allocator) !Userhash {
-        _ = allocator;
-        _ = length;
-        return deserialize(reader);
-    }
-
-    pub fn deserialize(reader: anytype) !Userhash {
-        var self: Userhash = undefined;
-        try reader.readNoEof(&self.value);
-        return self;
-    }
-
-    pub fn deinit(self: *const Userhash, allocator: std.mem.Allocator) void {
-        _ = allocator;
-        _ = self;
-    }
-};
-
-pub const MessageIntegrity = struct {
-    value: [20]u8,
-
-    pub fn alignedSize(self: *const MessageIntegrity) usize {
-        return std.mem.alignForward(self.size(), 4);
-    }
-
-    pub fn size(self: *const MessageIntegrity) usize {
-        return self.value.len;
-    }
-
-    pub fn serialize(self: *const MessageIntegrity, writer: anytype) !void {
-        try writer.writeAll(&self.value);
-    }
-
-    pub fn deserializeAlloc(reader: anytype, length: usize, allocator: std.mem.Allocator) !MessageIntegrity {
-        _ = allocator;
-        _ = length;
-        return deserialize(reader);
-    }
-
-    pub fn deserialize(reader: anytype) !MessageIntegrity {
-        var self: MessageIntegrity = undefined;
-        try reader.readNoEof(&self.value);
-        return self;
-    }
-
-    pub fn deinit(self: *const MessageIntegrity, allocator: std.mem.Allocator) void {
-        _ = allocator;
-        _ = self;
-    }
-};
-
-pub const MessageIntegritySha256 = struct {
-    storage: [32]u8,
-    length: usize,
-
-    pub fn fromRaw(value: []const u8) !MessageIntegritySha256 {
-        if (!std.mem.isAligned(value.len, 4)) return error.InvalidAttributeFormat;
-        var self: MessageIntegritySha256 = undefined;
-        std.debug.assert(value.len <= @sizeOf(@TypeOf(self.storage)));
-        std.mem.copy(u8, self.storage[0..value.len], value);
-        self.length = value.len;
-        return self;
-    }
-
-    pub fn alignedSize(self: *const MessageIntegritySha256) usize {
-        return std.mem.alignForward(self.size(), 4);
-    }
-
-    pub fn size(self: *const MessageIntegritySha256) usize {
-        return self.length;
-    }
-
-    pub fn serialize(self: *const MessageIntegritySha256, writer: anytype) !void {
-        std.debug.assert(std.mem.isAligned(self.length, 4));
-        try writer.writeAll(self.storage[0..self.length]);
-    }
-
-    pub fn deserializeAlloc(reader: anytype, length: usize, allocator: std.mem.Allocator) !MessageIntegritySha256 {
-        _ = allocator;
-        return MessageIntegritySha256.deserialize(reader, length);
-    }
-
-    pub fn deserialize(reader: anytype, length: usize) !MessageIntegritySha256 {
-        var self: MessageIntegritySha256 = undefined;
-        std.debug.assert(length <= @sizeOf(@TypeOf(self.storage)));
-        try reader.readNoEof(self.storage[0..length]);
-        self.length = length;
-        return self;
-    }
-
-    pub fn deinit(self: *const MessageIntegritySha256, allocator: std.mem.Allocator) void {
-        _ = allocator;
-        _ = self;
-    }
-};
-
-pub const Fingerprint = struct {
-    value: u32,
-
-    pub fn alignedSize(self: *const Fingerprint) usize {
-        return std.mem.alignForward(self.size(), 4);
-    }
-
-    pub fn size(self: *const Fingerprint) usize {
-        return @sizeOf(@TypeOf(self.value));
-    }
-
-    pub fn serialize(self: *const Fingerprint, writer: anytype) !void {
-        try writer.writeIntBig(u32, self.value);
-    }
-
-    pub fn deserializeAlloc(reader: anytype, length: usize, allocator: std.mem.Allocator) !Fingerprint {
-        _ = allocator;
-        _ = length;
-        return deserialize(reader);
-    }
-
-    pub fn deserialize(reader: anytype) !Fingerprint {
-        const value = try reader.readIntBig(u32);
-        return Fingerprint{ .value = value };
-    }
-
-    pub fn deinit(self: *const Fingerprint, allocator: std.mem.Allocator) void {
-        _ = allocator;
-        _ = self;
-    }
-};
-
-fn rawErrorCodeFromClassAndNumber(class: u3, number: u8) u32 {
-    var value: u32 = 0;
-    value |= @intCast(u32, class) << 8;
-    value |= @intCast(u32, number);
-
-    return value;
+    try std.testing.expectEqual(@as(u16, 0x0102), mapped_address_attribute.port);
+    try std.testing.expectEqual(common.AddressFamilyType.ipv4, mapped_address_attribute.family);
+    try std.testing.expectEqual(@as(u32, 0x7F000001), mapped_address_attribute.family.ipv4);
 }
 
-pub const RawErrorCode = enum(u32) {
-    try_alternate = rawErrorCodeFromClassAndNumber(3, 0),
-    bad_request = rawErrorCodeFromClassAndNumber(4, 0),
-    unauthenticated = rawErrorCodeFromClassAndNumber(4, 1),
-    unknown_attribute = rawErrorCodeFromClassAndNumber(4, 20),
-    stale_nonce = rawErrorCodeFromClassAndNumber(4, 38),
-    server_error = rawErrorCodeFromClassAndNumber(5, 0),
-};
-
-pub const ErrorCode = struct {
-    value: RawErrorCode,
-    reason: []const u8,
-
-    pub fn alignedSize(self: *const ErrorCode) usize {
-        return std.mem.alignForward(self.size(), 4);
-    }
-
-    pub fn size(self: *const ErrorCode) usize {
-        return 4 + self.reason.len;
-    }
-
-    pub fn serialize(self: *const ErrorCode, writer: anytype) !void {
-        try writer.writeIntBig(u32, @enumToInt(self.value));
-        try io.writeAllAligned(self.reason, 4, writer);
-    }
-
-    pub fn deserializeAlloc(reader: anytype, length: usize, allocator: std.mem.Allocator) !ErrorCode {
-        const reason_length = length - @sizeOf(u32);
-        var buffer = try allocator.alloc(u8, reason_length);
-        errdefer allocator.free(buffer);
-
-        return ErrorCode.deserialize(reader, buffer);
-    }
-
-    pub fn deserialize(reader: anytype, buf: []u8) !ErrorCode {
-        const raw_class_and_number = try reader.readIntBig(u32);
-        const value = std.meta.intToEnum(RawErrorCode, raw_class_and_number) catch return error.InvalidAttributeFormat;
-        try io.readNoEofAligned(reader, 4, buf);
-        return ErrorCode{
-            .value = value,
-            .reason = buf,
-        };
-    }
-
-    pub fn deinit(self: *const ErrorCode, allocator: std.mem.Allocator) void {
-        allocator.free(self.reason);
-    }
-};
-
-pub const Realm = struct {
-    value: []const u8,
-
-    pub fn alignedSize(self: *const Realm) usize {
-        return std.mem.alignForward(self.size(), 4);
-    }
-
-    pub fn size(self: *const Realm) usize {
-        return self.value.len;
-    }
-
-    pub fn serialize(self: *const Realm, writer: anytype) !void {
-        try io.writeAllAligned(self.value, 4, writer);
-    }
-
-    pub fn deserializeAlloc(reader: anytype, length: usize, allocator: std.mem.Allocator) !Realm {
-        var buffer = try allocator.alloc(u8, length);
-        errdefer allocator.free(buffer);
-
-        return Realm.deserialize(reader, buffer);
-    }
-
-    pub fn deserialize(reader: anytype, buf: []u8) !Realm {
-        try io.readNoEofAligned(reader, 4, buf);
-        return Realm{
-            .value = buf,
-        };
-    }
-
-    pub fn deinit(self: *const Realm, allocator: std.mem.Allocator) void {
-        allocator.free(self.value);
-    }
-};
-
-pub const Nonce = struct {
-    value: []const u8,
-
-    pub fn alignedSize(self: *const Nonce) usize {
-        return std.mem.alignForward(self.size(), 4);
-    }
-
-    pub fn size(self: *const Nonce) usize {
-        return self.value.len;
-    }
-
-    pub fn serialize(self: *const Nonce, writer: anytype) !void {
-        try io.writeAllAligned(self.value, 4, writer);
-    }
-
-    pub fn deserializeAlloc(reader: anytype, length: usize, allocator: std.mem.Allocator) !Nonce {
-        var buffer = try allocator.alloc(u8, length);
-        errdefer allocator.free(buffer);
-
-        return Nonce.deserialize(reader, buffer);
-    }
-
-    pub fn deserialize(reader: anytype, buf: []u8) !Nonce {
-        try io.readNoEofAligned(reader, 4, buf);
-        return Nonce{
-            .value = buf,
-        };
-    }
-
-    pub fn deinit(self: *const Nonce, allocator: std.mem.Allocator) void {
-        allocator.free(self.value);
-    }
-};
-
-pub const AlgorithmType = enum(u16) {
-    md5 = 0x0001,
-    sha256 = 0x0002,
-};
-
-pub const Algorithm = union(AlgorithmType) {
-    md5: void,
-    sha256: void,
-
-    pub fn parameterSize(self: *const Algorithm) usize {
-        return switch (self.*) {
-            inline else => |algorithm| @sizeOf(@TypeOf(algorithm)),
-        };
-    }
-
-    pub fn serialize(self: *const Algorithm, writer: anytype) !void {
-        switch (self.*) {
-            inline else => {
-                try writer.writeIntBig(u16, @enumToInt(self.*));
-                try writer.writeIntBig(u16, @truncate(u16, self.parameterSize()));
-            },
-        }
-    }
-
-    pub fn deserializeAlloc(reader: anytype, allocator: std.mem.Allocator) !Algorithm {
-        _ = allocator;
-        const raw_algorithm_type = try reader.readIntBig(u16);
-        const parameter_length = try reader.readIntBig(u16);
-        _ = parameter_length;
-
-        const algorithm_type = std.meta.intToEnum(AlgorithmType, raw_algorithm_type) catch return error.InvalidAttributeFormat;
-        switch (algorithm_type) {
-            inline else => |tag| {
-                if (tag != .md5 and tag != .sha256) @panic(@tagName(tag) ++ " algorithm is not implemented");
-                try io.readNoEofAligned(reader, 4, &.{});
-                return @unionInit(Algorithm, @tagName(tag), {});
-            },
-        }
-    }
-
-    pub fn deinit(self: *const Algorithm, allocator: std.mem.Allocator) void {
-        _ = allocator;
-        _ = self;
-    }
-};
-
-pub const PasswordAlgorithms = struct {
-    algorithms: []Algorithm,
-
-    pub fn alignedSize(self: *const PasswordAlgorithms) usize {
-        return std.mem.alignForward(self.size(), 4);
-    }
-
-    pub fn size(self: *const PasswordAlgorithms) usize {
-        var raw_size: usize = 0;
-        for (self.algorithms) |algorithm| {
-            raw_size += 4 + std.mem.alignForward(algorithm.parameterSize(), 4);
-        }
-        return raw_size;
-    }
-
-    pub fn serialize(self: *const PasswordAlgorithms, writer: anytype) !void {
-        for (self.algorithms) |algorithm| {
-            try algorithm.serialize(writer);
-        }
-    }
-
-    pub fn deserializeAlloc(reader: anytype, length: usize, allocator: std.mem.Allocator) !PasswordAlgorithms {
-        var algorithm_list = try std.ArrayList(Algorithm).initCapacity(allocator, std.meta.fields(AlgorithmType).len);
-        defer algorithm_list.deinit();
-        var counting_stream = std.io.countingReader(reader);
-        var counting_reader = counting_stream.reader();
-
-        while (counting_stream.bytes_read < length) {
-            try algorithm_list.append(try Algorithm.deserializeAlloc(counting_reader, allocator));
-        }
-        return PasswordAlgorithms{ .algorithms = algorithm_list.toOwnedSlice() };
-    }
-
-    pub fn deserialize(reader: anytype) !PasswordAlgorithms {
-        _ = reader;
-        return error.NotImplemented;
-    }
-
-    pub fn deinit(self: *const PasswordAlgorithms, allocator: std.mem.Allocator) void {
-        for (self.algorithms) |a| {
-            a.deinit(allocator);
-        }
-        allocator.free(self.algorithms);
-    }
-};
-
-pub const PasswordAlgorithm = struct {
-    algorithm: Algorithm,
-
-    pub fn alignedSize(self: *const PasswordAlgorithm) usize {
-        return std.mem.alignForward(self.size(), 4);
-    }
-
-    pub fn size(self: *const PasswordAlgorithm) usize {
-        return 4 + std.mem.alignForward(self.algorithm.parameterSize(), 4);
-    }
-
-    pub fn serialize(self: *const PasswordAlgorithm, writer: anytype) !void {
-        try self.algorithm.serialize(writer);
-    }
-
-    pub fn deserializeAlloc(reader: anytype, length: usize, allocator: std.mem.Allocator) !PasswordAlgorithm {
-        _ = length;
-        const algorithm = try Algorithm.deserializeAlloc(reader, allocator);
-        return PasswordAlgorithm{ .algorithm = algorithm };
-    }
-
-    pub fn deserialize(reader: anytype) !PasswordAlgorithm {
-        _ = reader;
-        return error.NotImplemented;
-    }
-
-    pub fn deinit(self: *const PasswordAlgorithm, allocator: std.mem.Allocator) void {
-        self.algorithm.deinit(allocator);
-    }
-};
-
-pub const UnknownAttributes = struct {
-    attribute_types: []u16,
-
-    pub fn alignedSize(self: *const UnknownAttributes) usize {
-        return std.mem.alignForward(self.size(), 4);
-    }
-
-    pub fn size(self: *const UnknownAttributes) usize {
-        return self.attribute_types.len * @sizeOf(u16);
-    }
-
-    pub fn serialize(self: *const UnknownAttributes, writer: anytype) !void {
-        for (self.attribute_types) |attribute_type| {
-            try writer.writeIntBig(u16, attribute_type);
-        }
-        if (self.attribute_types.len % 2 == 1) {
-            try writer.writeIntBig(u16, 0);
-        }
-    }
-
-    pub fn deserializeAlloc(reader: anytype, length: usize, allocator: std.mem.Allocator) !UnknownAttributes {
-        if (length % 2 != 0) return error.InvalidAttributeFormat;
-        var buffer = try allocator.alloc(u16, length / 2);
-        errdefer allocator.free(buffer);
-
-        return UnknownAttributes.deserialize(reader, buffer);
-    }
-
-    pub fn deserialize(reader: anytype, attribute_types: []u16) !UnknownAttributes {
-        for (attribute_types) |*attribute_type| {
-            attribute_type.* = try reader.readIntBig(u16);
-        }
-        if (attribute_types.len % 2 == 1) {
-            _ = try reader.readIntBig(u16);
-        }
-        return UnknownAttributes{ .attribute_types = attribute_types };
-    }
-
-    pub fn deinit(self: *const UnknownAttributes, allocator: std.mem.Allocator) void {
-        allocator.free(self.attribute_types);
-    }
-};
-
-pub const Software = struct {
-    value: []const u8,
-
-    pub fn alignedSize(self: *const Software) usize {
-        return std.mem.alignForward(self.size(), 4);
-    }
-
-    pub fn size(self: *const Software) usize {
-        return self.value.len;
-    }
-
-    pub fn serialize(self: *const Software, writer: anytype) !void {
-        try io.writeAllAligned(self.value, 4, writer);
-    }
-
-    pub fn deserializeAlloc(reader: anytype, length: usize, allocator: std.mem.Allocator) !Software {
-        var buffer = try allocator.alloc(u8, length);
-        errdefer allocator.free(buffer);
-
-        return Software.deserialize(reader, buffer);
-    }
-
-    pub fn deserialize(reader: anytype, buf: []u8) !Software {
-        try io.readNoEofAligned(reader, 4, buf);
-        return Software{
-            .value = buf,
-        };
-    }
-
-    pub fn deinit(self: *const Software, allocator: std.mem.Allocator) void {
-        allocator.free(self.value);
-    }
-};
-
-pub const AlternateServer = struct {
-    family: AddressFamily,
-    port: u16,
-
-    pub fn alignedSize(self: *const AlternateServer) usize {
-        return std.mem.alignForward(self.size(), 4);
-    }
-
-    pub fn size(self: *const AlternateServer) usize {
-        return 4 + self.family.size();
-    }
-
-    pub fn serialize(self: *const AlternateServer, writer: anytype) !void {
-        try writer.writeByte(0);
-        switch (self.family) {
-            inline else => |address, family| {
-                try writer.writeByte(@enumToInt(family));
-                try writer.writeIntBig(u16, self.port);
-                try writer.writeIntBig(@TypeOf(address), address);
-            },
-        }
-    }
-
-    pub fn deserializeAlloc(reader: anytype, length: usize, allocator: std.mem.Allocator) !AlternateServer {
-        _ = allocator;
-        _ = length;
-        return deserialize(reader);
-    }
-
-    pub fn deserialize(reader: anytype) !AlternateServer {
-        if (try reader.readByte() != 0x00) return error.InvalidAttributeFormat;
-        const raw_family_type = try reader.readByte();
-        const family_type = std.meta.intToEnum(AddressFamilyType, raw_family_type) catch return error.InvalidAttributeFormat;
-        const port = try reader.readIntBig(u16);
-
-        const family = switch (family_type) {
-            .ipv4 => AddressFamily{ .ipv4 = try reader.readIntBig(u32) },
-            .ipv6 => AddressFamily{ .ipv6 = try reader.readIntBig(u128) },
-        };
-
-        return AlternateServer{
-            .family = family,
-            .port = port,
-        };
-    }
-
-    pub fn deinit(self: *const AlternateServer, allocator: std.mem.Allocator) void {
-        _ = allocator;
-        _ = self;
-    }
-};
-
-pub const AlternateDomain = struct {
-    value: []const u8,
-
-    pub fn alignedSize(self: *const AlternateDomain) usize {
-        return std.mem.alignForward(self.size(), 4);
-    }
-
-    pub fn size(self: *const AlternateDomain) usize {
-        return self.value.len;
-    }
-
-    pub fn serialize(self: *const AlternateDomain, writer: anytype) !void {
-        try io.writeAllAligned(self.value, 4, writer);
-    }
-
-    pub fn deserializeAlloc(reader: anytype, length: usize, allocator: std.mem.Allocator) !AlternateDomain {
-        var buffer = try allocator.alloc(u8, length);
-        errdefer allocator.free(buffer);
-
-        return AlternateDomain.deserialize(reader, buffer);
-    }
-
-    pub fn deserialize(reader: anytype, buf: []u8) !AlternateDomain {
-        try io.readNoEofAligned(reader, 4, buf);
-        return AlternateDomain{
-            .value = buf,
-        };
-    }
-
-    pub fn deinit(self: *const AlternateDomain, allocator: std.mem.Allocator) void {
-        allocator.free(self.value);
-    }
-};
-
-test {
-    _ = @import("attributes/test.zig");
+test "XOR-MAPPED-ADDRESS deserialization" {
+    const buffer = [_]u8{
+        // Header
+        0x00, 0x20,
+        0x00, 0x08,
+        // Padding
+        0x00,
+        // Family type
+        0x01,
+        // X-Port
+        0x20, 0x10,
+        // X-Address
+        0x5E, 0x12,
+        0xA4, 0x43,
+    };
+
+    var stream = std.io.fixedBufferStream(&buffer);
+    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    defer std.testing.allocator.free(attribute.data);
+
+    var xor_mapped_address_attribute = try common.XorMappedAddress.fromAttribute(attribute);
+
+    try std.testing.expectEqual(@as(u16, 0x2010), xor_mapped_address_attribute.x_port);
+    try std.testing.expectEqual(common.AddressFamilyType.ipv4, xor_mapped_address_attribute.x_family);
+    try std.testing.expectEqual(@as(u32, 0x5E12A443), xor_mapped_address_attribute.x_family.ipv4);
+
+    const decoded_attribute = common.decode(xor_mapped_address_attribute, 0x0);
+    try std.testing.expectEqual(@as(u16, 0x0102), decoded_attribute.port);
+    try std.testing.expectEqual(common.AddressFamilyType.ipv4, decoded_attribute.family);
+    try std.testing.expectEqual(@as(u32, 0x7F000001), decoded_attribute.family.ipv4);
+}
+
+test "USERNAME deserialization" {
+    const buffer = [_]u8{
+        // Header
+        0x00,
+        0x06,
+        0x00,
+        0x04,
+        // Value
+        @as(u8, 'z'),
+        @as(u8, 't'),
+        @as(u8, 'u'),
+        @as(u8, 'n'),
+    };
+
+    var stream = std.io.fixedBufferStream(&buffer);
+    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    defer std.testing.allocator.free(attribute.data);
+
+    var username_attribute = try common.Username.fromAttribute(attribute);
+
+    try std.testing.expectEqualStrings("ztun", username_attribute.value);
+}
+
+test "USERHASH deserialization" {
+    const buffer = [_]u8{
+        // Header
+        0x00,
+        0x1E,
+        0x00,
+        0x20,
+        // Value
+        @as(u8, 'a'),
+        @as(u8, 'b'),
+        @as(u8, 'c'),
+        @as(u8, 'd'),
+        @as(u8, 'e'),
+        @as(u8, 'f'),
+        @as(u8, 'g'),
+        @as(u8, 'h'),
+        @as(u8, 'i'),
+        @as(u8, 'j'),
+        @as(u8, 'k'),
+        @as(u8, 'l'),
+        @as(u8, 'm'),
+        @as(u8, 'n'),
+        @as(u8, 'o'),
+        @as(u8, 'p'),
+        @as(u8, 'q'),
+        @as(u8, 'r'),
+        @as(u8, 's'),
+        @as(u8, 't'),
+        @as(u8, 'u'),
+        @as(u8, 'v'),
+        @as(u8, 'w'),
+        @as(u8, 'x'),
+        @as(u8, 'y'),
+        @as(u8, 'z'),
+        @as(u8, 'a'),
+        @as(u8, 'b'),
+        @as(u8, 'c'),
+        @as(u8, 'd'),
+        @as(u8, 'e'),
+        @as(u8, 'f'),
+    };
+
+    var stream = std.io.fixedBufferStream(&buffer);
+    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    defer std.testing.allocator.free(attribute.data);
+
+    var userhash_attribute = try common.Userhash.fromAttribute(attribute);
+
+    try std.testing.expectEqualStrings("abcdefghijklmnopqrstuvwxyzabcdef", &userhash_attribute.value);
+}
+
+// NOTE(Corentin): Hash is the SHA-1 of "ztun"
+
+test "MESSAGE-INTEGRITY deserialization" {
+    const hash = [_]u8{
+        0x43,
+        0x23,
+        0xc5,
+        0x7d,
+        0x5d,
+        0x67,
+        0x74,
+        0xac,
+        0x3e,
+        0xdb,
+        0xcc,
+        0x0a,
+        0x1d,
+        0x48,
+        0xc2,
+        0xd2,
+        0x52,
+        0x78,
+        0x3e,
+        0xa4,
+    };
+
+    const buffer = [_]u8{
+        // Header
+        0x00,
+        0x08,
+        0x00,
+        0x14,
+        // Value
+        0x43,
+        0x23,
+        0xc5,
+        0x7d,
+        0x5d,
+        0x67,
+        0x74,
+        0xac,
+        0x3e,
+        0xdb,
+        0xcc,
+        0x0a,
+        0x1d,
+        0x48,
+        0xc2,
+        0xd2,
+        0x52,
+        0x78,
+        0x3e,
+        0xa4,
+    };
+    var stream = std.io.fixedBufferStream(&buffer);
+    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    defer std.testing.allocator.free(attribute.data);
+
+    const message_integrity_attribute = try common.MessageIntegrity.fromAttribute(attribute);
+
+    try std.testing.expectEqualSlices(u8, &hash, &message_integrity_attribute.value);
+}
+
+// NOTE(Corentin): Hash is the 20 first bytes of SHA-256 of "ztun"
+test "MESSAGE-INTEGRITY-SHA256 deserialization" {
+    const hash = [_]u8{
+        0x4d,
+        0xff,
+        0xed,
+        0xda,
+        0x21,
+        0x1d,
+        0x83,
+        0x6d,
+        0x26,
+        0x12,
+        0x92,
+        0x2e,
+        0x3d,
+        0xa5,
+        0x87,
+        0x02,
+        0x5d,
+        0x18,
+        0xee,
+        0xec,
+    };
+
+    const buffer = [_]u8{
+        // Header
+        0x00,
+        0x1C,
+        0x00,
+        0x14,
+        // Value
+        0x4d,
+        0xff,
+        0xed,
+        0xda,
+        0x21,
+        0x1d,
+        0x83,
+        0x6d,
+        0x26,
+        0x12,
+        0x92,
+        0x2e,
+        0x3d,
+        0xa5,
+        0x87,
+        0x02,
+        0x5d,
+        0x18,
+        0xee,
+        0xec,
+    };
+    var stream = std.io.fixedBufferStream(&buffer);
+    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    defer std.testing.allocator.free(attribute.data);
+
+    const message_integrity_sha256_attribute = try common.MessageIntegritySha256.fromAttribute(attribute);
+
+    try std.testing.expectEqualSlices(u8, &hash, message_integrity_sha256_attribute.storage[0..message_integrity_sha256_attribute.length]);
+}
+
+test "FINGERPRINT deserialization" {
+    const buffer = [_]u8{
+        // Header
+        0x80,
+        0x28,
+        0x00,
+        0x04,
+        // Value
+        0x01,
+        0x02,
+        0x03,
+        0x04,
+    };
+    var stream = std.io.fixedBufferStream(&buffer);
+    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    defer std.testing.allocator.free(attribute.data);
+
+    const fingerprint_attribute = try common.Fingerprint.fromAttribute(attribute);
+
+    try std.testing.expectEqual(@as(u32, 0x01020304), fingerprint_attribute.value);
+}
+
+test "ERROR-CODE deserialization" {
+    const buffer = [_]u8{
+        // Header
+        0x00,
+        0x09,
+        0x00,
+        0x0A,
+        // Class and number
+        0x00,
+        0x00,
+        4,
+        20,
+    } ++ "reason" ++ [_]u8{ 0, 0 };
+
+    var stream = std.io.fixedBufferStream(buffer);
+    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    defer std.testing.allocator.free(attribute.data);
+
+    const error_code_attribute = try common.ErrorCode.fromAttribute(attribute);
+
+    try std.testing.expectEqual(common.RawErrorCode.unknown_attribute, error_code_attribute.value);
+    try std.testing.expectEqualStrings("reason", error_code_attribute.reason);
+}
+
+test "REALM deserialization" {
+    const buffer = [_]u8{
+        // Header
+        0x00,
+        0x14,
+        0x00,
+        0x05,
+        // Value
+        @as(u8, 'r'),
+        @as(u8, 'e'),
+        @as(u8, 'a'),
+        @as(u8, 'l'),
+        @as(u8, 'm'),
+        // Padding
+        0,
+        0,
+        0,
+    };
+    var stream = std.io.fixedBufferStream(&buffer);
+    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    defer std.testing.allocator.free(attribute.data);
+
+    const realm_attribute = try common.Realm.fromAttribute(attribute);
+
+    try std.testing.expectEqualStrings("realm", realm_attribute.value);
+}
+
+test "NONCE deserialization" {
+    const buffer = [_]u8{
+        // Header
+        0x00,
+        0x15,
+        0x00,
+        0x05,
+        // Value
+        @as(u8, 'n'),
+        @as(u8, 'o'),
+        @as(u8, 'n'),
+        @as(u8, 'c'),
+        @as(u8, 'e'),
+        // Padding
+        0,
+        0,
+        0,
+    };
+    var stream = std.io.fixedBufferStream(&buffer);
+    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    defer std.testing.allocator.free(attribute.data);
+
+    const nonce_attribute = try common.Nonce.fromAttribute(attribute);
+
+    try std.testing.expectEqualStrings("nonce", nonce_attribute.value);
+}
+
+test "PASSWORD-ALGORITHMS deserialization" {
+    const buffer = [_]u8{
+        // Header
+        0x80, 0x02,
+        0x00, 0x08,
+        // Type MD5
+        0x00, 0x01,
+        // Length
+        0x00, 0x00,
+        // Empty parameters
+        // Type SHA256
+        0x00, 0x02,
+        // Length
+        0x00,
+        0x00,
+        // Empty parameters
+    };
+
+    var stream = std.io.fixedBufferStream(&buffer);
+    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    defer std.testing.allocator.free(attribute.data);
+
+    const password_algorithms_attribute = try common.PasswordAlgorithms.fromAttribute(attribute, std.testing.allocator);
+    defer std.testing.allocator.free(password_algorithms_attribute.algorithms);
+
+    try std.testing.expectEqual(@as(usize, 2), password_algorithms_attribute.algorithms.len);
+    try std.testing.expectEqual(@as(u16, common.AlgorithmType.md5), password_algorithms_attribute.algorithms[0].type);
+    try std.testing.expectEqualSlices(u8, &.{}, password_algorithms_attribute.algorithms[0].parameters);
+    try std.testing.expectEqual(@as(u16, common.AlgorithmType.sha256), password_algorithms_attribute.algorithms[1].type);
+    try std.testing.expectEqualSlices(u8, &.{}, password_algorithms_attribute.algorithms[1].parameters);
+}
+
+test "PASSWORD-ALGORITHM deserialization" {
+    const buffer = [_]u8{
+        // Header
+        0x00, 0x1D,
+        0x00, 0x04,
+        // Type MD5
+        0x00, 0x01,
+        // Length
+        0x00,
+        0x00,
+        // Empty parameters
+    };
+
+    var stream = std.io.fixedBufferStream(&buffer);
+    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    defer std.testing.allocator.free(attribute.data);
+
+    const password_algorithm_attribute = try common.PasswordAlgorithm.fromAttribute(attribute);
+
+    try std.testing.expectEqual(@as(u16, common.AlgorithmType.md5), password_algorithm_attribute.algorithm.type);
+    try std.testing.expectEqualSlices(u8, &.{}, password_algorithm_attribute.algorithm.parameters);
+}
+
+test "UNKNOWN-ATTRIBUTES deserialization" {
+    const buffer = [_]u8{
+        // Header
+        0x00, 0x0A,
+        0x00, 0x06,
+        // Attribute 1
+        0x7F, 0x00,
+        // Attribute 2
+        0x7F, 0x01,
+        // Attribute 3
+        0x7F, 0x02,
+        // Padding
+        0x00, 0x00,
+    };
+
+    var stream = std.io.fixedBufferStream(&buffer);
+    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    defer std.testing.allocator.free(attribute.data);
+
+    const unknown_attributes_attribute = try common.UnknownAttributes.fromAttribute(attribute, std.testing.allocator);
+    defer std.testing.allocator.free(unknown_attributes_attribute.attribute_types);
+
+    try std.testing.expectEqual(@as(usize, 3), unknown_attributes_attribute.attribute_types.len);
+    try std.testing.expectEqual(@as(u16, 0x7F00), unknown_attributes_attribute.attribute_types[0]);
+    try std.testing.expectEqual(@as(u16, 0x7F01), unknown_attributes_attribute.attribute_types[1]);
+    try std.testing.expectEqual(@as(u16, 0x7F02), unknown_attributes_attribute.attribute_types[2]);
+}
+
+test "SOFTWARE deserialization" {
+    const buffer = [_]u8{
+        // Header
+        0x80,
+        0x22,
+        0x00,
+        0x08,
+        // Value
+        @as(u8, 's'),
+        @as(u8, 'o'),
+        @as(u8, 'f'),
+        @as(u8, 't'),
+        @as(u8, 'w'),
+        @as(u8, 'a'),
+        @as(u8, 'r'),
+        @as(u8, 'e'),
+    };
+    var stream = std.io.fixedBufferStream(&buffer);
+    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    defer std.testing.allocator.free(attribute.data);
+
+    const software_attribute = try common.Software.fromAttribute(attribute);
+
+    try std.testing.expectEqualStrings("software", software_attribute.value);
+}
+
+test "ALTERNATE-SERVER deserialization" {
+    const buffer = [_]u8{
+        // Header
+        0x80, 0x23,
+        0x00, 0x08,
+        // Padding
+        0x00,
+        // Family type
+        0x01,
+        // Port
+        0x01, 0x02,
+        // Address
+        127,  0,
+        0,    1,
+    };
+    var stream = std.io.fixedBufferStream(&buffer);
+    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    defer std.testing.allocator.free(attribute.data);
+
+    const alternate_server_attribute = try common.AlternateServer.fromAttribute(attribute);
+
+    try std.testing.expectEqual(@as(u16, 0x0102), alternate_server_attribute.port);
+    try std.testing.expectEqual(common.AddressFamilyType.ipv4, alternate_server_attribute.family);
+    try std.testing.expectEqual(@as(u32, 0x7F000001), alternate_server_attribute.family.ipv4);
+}
+
+test "ALTERNATE-DOMAIN deserialization" {
+    const buffer = [_]u8{
+        // Header
+        0x80,
+        0x03,
+        0x00,
+        0x07,
+        // Value
+        @as(u8, 'l'),
+        @as(u8, 'o'),
+        @as(u8, 's'),
+        @as(u8, 't'),
+        @as(u8, '.'),
+        @as(u8, 'i'),
+        @as(u8, 'o'),
+        // Padding
+        0,
+    };
+    var stream = std.io.fixedBufferStream(&buffer);
+    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    defer std.testing.allocator.free(attribute.data);
+
+    const alternate_domain_attribute = try common.AlternateDomain.fromAttribute(attribute);
+
+    try std.testing.expectEqualStrings("lost.io", alternate_domain_attribute.value);
 }

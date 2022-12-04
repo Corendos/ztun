@@ -68,8 +68,8 @@ pub const Ipv4Address = struct {
 pub const Ipv6Address = struct {
     value: u128,
     port: u16,
-    flowinfo: u32,
-    scope_id: u32,
+    flowinfo: u32 = 0,
+    scope_id: u32 = 0,
 
     pub fn format(self: Ipv6Address, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
         _ = options;
