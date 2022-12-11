@@ -10,25 +10,35 @@ const ztun = @import("../ztun.zig");
 
 const software_version_attribute = attr.common.Software{ .value = std.fmt.comptimePrint("ztun v{}", .{@import("constants.zig").version}) };
 
+/// Authentication used by the server.
 pub const AuthenticationType = enum {
+    /// No authentication.
     none,
+    /// Short-term authentication.
     short_term,
+    /// Long-term authentication.
     long_term,
 };
 
+/// Options to configure the STUN server.
 pub const Options = struct {
+    /// Type of authentication to use.
     authentication_type: AuthenticationType = .none,
 };
 
+/// Server related error.
 pub const Error = error{
     MethodNotAllowedForClass,
     InvalidFingerprint,
     UnknownTransaction,
 } || ztun.MessageBuilder.Error || std.mem.Allocator.Error;
 
+/// Stores the options of the server.
 options: Options,
+/// Allocator used by the server internally.
 allocator: std.mem.Allocator,
 
+/// Initializes a server using the given allocator and options.
 pub fn init(allocator: std.mem.Allocator, options: Options) Self {
     return Self{
         .options = options,
@@ -36,10 +46,12 @@ pub fn init(allocator: std.mem.Allocator, options: Options) Self {
     };
 }
 
+/// Deinitializes the server.
 pub fn deinit(self: *Self) void {
     _ = self;
 }
 
+/// Returns true if the given attribute is not known by the server.
 fn isUnknownAttribute(value: u16) bool {
     return switch (value) {
         @as(u16, attr.Type.mapped_address) => false,
@@ -62,6 +74,7 @@ fn isUnknownAttribute(value: u16) bool {
     };
 }
 
+/// Returns true if the method is a valid method for the given class.
 fn isMethodAllowedForClass(method: ztun.Method, class: ztun.Class) bool {
     return switch (class) {
         .request => method == .binding,
@@ -87,6 +100,7 @@ fn checkFingerprint(message: ztun.Message, allocator: std.mem.Allocator) bool {
     return computed_fingerprint == fingerprint;
 }
 
+/// Returns the list of unknown attributes or null if they are all known.
 fn lookForUnknownAttributes(message: ztun.Message, allocator: std.mem.Allocator) error{OutOfMemory}!?[]u16 {
     var comprehension_required_unknown_attributes = try std.ArrayList(u16).initCapacity(allocator, message.attributes.len);
     defer comprehension_required_unknown_attributes.deinit();
@@ -98,6 +112,7 @@ fn lookForUnknownAttributes(message: ztun.Message, allocator: std.mem.Allocator)
     return if (comprehension_required_unknown_attributes.items.len == 0) null else comprehension_required_unknown_attributes.toOwnedSlice();
 }
 
+/// Returns a STUN message representing a Bad Request response_error.
 fn makeBadRequestMessage(request: ztun.Message, allocator: std.mem.Allocator) ztun.MessageBuilder.Error!ztun.Message {
     var message_builder = ztun.MessageBuilder.init(allocator);
     defer message_builder.deinit();
@@ -114,6 +129,7 @@ fn makeBadRequestMessage(request: ztun.Message, allocator: std.mem.Allocator) zt
     return try message_builder.build();
 }
 
+/// Returns a STUN message representing a Unauthenticated response_error.
 fn makeUnauthenticatedMessage(request: ztun.Message, reason: []const u8, allocator: std.mem.Allocator) ztun.MessageBuilder.Error!ztun.Message {
     var message_builder = ztun.MessageBuilder.init(allocator);
     defer message_builder.deinit();
@@ -130,6 +146,7 @@ fn makeUnauthenticatedMessage(request: ztun.Message, reason: []const u8, allocat
     return try message_builder.build();
 }
 
+/// Returns a STUN message representing a Unknown Attributes response_error.
 fn makeUnknownAttributesMessage(request: ztun.Message, unknown_attributes: []u16, allocator: std.mem.Allocator) ztun.MessageBuilder.Error!ztun.Message {
     var message_builder = ztun.MessageBuilder.init(allocator);
     defer message_builder.deinit();
@@ -151,11 +168,17 @@ fn makeUnknownAttributesMessage(request: ztun.Message, unknown_attributes: []u16
     return try message_builder.build();
 }
 
+/// Represents the parameters required to compute the authentication-related value.
 const Authentication = union(AuthenticationType) {
+    /// No parameters required when there is no authentication.
     none: void,
+    /// Short-term authentication paramters.
     short_term: ztun.auth.ShortTermAuthentication,
+    /// Long-term authentication paramters.
     long_term: ztun.auth.LongTermAuthentication,
 
+    /// Returns a `ztun.auth.Authentication` struct from the server-specific `Authentication` struct.
+    // TODO(Corendos): Find a better name for that or merge this and `ztun.auth.Authentication`.
     pub fn toAuthentication(self: Authentication) !ztun.auth.Authentication {
         return switch (self) {
             .none => error.InvalidAuthentication,
@@ -165,23 +188,34 @@ const Authentication = union(AuthenticationType) {
     }
 };
 
+/// Represents the result of an authentication to the server.
 const AuthenticationResult = union(enum) {
+    /// The message should be discarded silently,
     discard: void,
+    /// The authentication succeeded and the result contains the parameters.
     authentication: Authentication,
+    /// The authentication failed and produced a response to send back.
     response: ztun.Message,
 };
 
+/// Type of Authentication result.
 const AuthenticationResultType = std.meta.Tag(AuthenticationResult);
 
+/// Represents some details about the message integrity attributes of a message.
 const MessageIntegrityDetails = struct {
+    /// Stores the index of the USERNAME attribute if any.
     username_index: ?usize = null,
+    /// Stores the index of the MESSAGE-INTEGRITY attribute if any.
     simple_index: ?usize = null,
+    /// Stores the index of the MESSAGE-INTEGRITY-SHA256 if any
     sha256_index: ?usize = null,
 
+    /// Returns true if the message contains the required attribute for authentication.
     pub inline fn isValid(self: MessageIntegrityDetails) bool {
         return (self.simple_index != null or self.sha256_index != null) and self.username_index != null;
     }
 
+    /// Extracts details from a list of attribute.
     pub fn fromAttributes(attributes: []const ztun.Attribute) MessageIntegrityDetails {
         var details = MessageIntegrityDetails{};
         for (attributes) |attribute, i| {
@@ -196,6 +230,7 @@ const MessageIntegrityDetails = struct {
     }
 };
 
+/// Checks that the message integrity stored in a STUN message is valid using the authentication parameters of a user. Returns true if the message integrity is corrext, false otherwise.
 fn checkMessageIntegrity(message: ztun.Message, message_integrity_details: MessageIntegrityDetails, authentication: ztun.auth.Authentication, allocator: std.mem.Allocator) !bool {
     const key = try authentication.computeKeyAlloc(allocator);
     defer allocator.free(key);
@@ -216,6 +251,7 @@ fn checkMessageIntegrity(message: ztun.Message, message_integrity_details: Messa
     } else unreachable;
 }
 
+/// Returns the credentials of a given user or null if there is none.
 fn authenticateUser(self: Self, username: []const u8) ?ztun.auth.Authentication {
     if (!std.mem.eql(u8, username, "anon")) return null;
     // TODO(Corentin): implement checking
@@ -227,6 +263,7 @@ fn authenticateUser(self: Self, username: []const u8) ?ztun.auth.Authentication 
     };
 }
 
+/// Authenticates the sender of a STUN message using the short-term mechanism.
 fn authenticateShortTerm(self: Self, message: ztun.Message, message_integrity_details: MessageIntegrityDetails, temporary_allocator: std.mem.Allocator, allocator: std.mem.Allocator) !AuthenticationResult {
     if (!message_integrity_details.isValid()) {
         return .{ .response = try makeBadRequestMessage(message, allocator) };
@@ -251,6 +288,7 @@ fn authenticateShortTerm(self: Self, message: ztun.Message, message_integrity_de
     return .{ .authentication = Authentication{ .short_term = authentication.short_term } };
 }
 
+/// Authenticates the sender of a STUN message using the long-erm mechanism.
 fn authenticateLongTerm(self: Self, message: ztun.Message, message_integrity_details: MessageIntegrityDetails, temporary_allocator: std.mem.Allocator, allocator: std.mem.Allocator) !AuthenticationResult {
     _ = message_integrity_details;
     _ = allocator;
@@ -260,6 +298,7 @@ fn authenticateLongTerm(self: Self, message: ztun.Message, message_integrity_det
     @panic("Long-Term authentication is not implemented.");
 }
 
+/// Authenticates the sender of a STUN message using the server configuration.
 fn authenticate(self: Self, message: ztun.Message, message_integrity_details: MessageIntegrityDetails, temporary_allocator: std.mem.Allocator, allocator: std.mem.Allocator) !AuthenticationResult {
     return switch (self.options.authentication_type) {
         .none => .{ .authentication = .{ .none = {} } },
@@ -268,6 +307,7 @@ fn authenticate(self: Self, message: ztun.Message, message_integrity_details: Me
     };
 }
 
+/// Handles a request after the basic checks and authentication (if needed) has been done.
 pub fn handleRequest(server: Self, message: ztun.Message, source: net.Address, authentication: Authentication, message_integrity_details: MessageIntegrityDetails, temporary_arena: std.mem.Allocator, allocator: std.mem.Allocator) Error!MessageResult {
     _ = server;
     std.log.debug("Received {s} request from {any}", .{ @tagName(message.type.method), source });
@@ -320,6 +360,7 @@ pub fn handleRequest(server: Self, message: ztun.Message, source: net.Address, a
     return .{ .response = try message_builder.build() };
 }
 
+/// Handles an indication after the basic checks and authentication (if needed) has been done.
 pub fn handleIndication(server: Self, message: ztun.Message, authentication: Authentication, temporary_arena: std.mem.Allocator, allocator: std.mem.Allocator) Error!MessageResult {
     _ = authentication;
     _ = temporary_arena;
@@ -329,6 +370,7 @@ pub fn handleIndication(server: Self, message: ztun.Message, authentication: Aut
     @panic("Indication handling is not implemented");
 }
 
+/// Handles a response after the basic checks and authentication (if needed) has been done.
 pub fn handleResponse(server: Self, message: ztun.Message, success: bool, authentication: Authentication, temporary_arena: std.mem.Allocator, allocator: std.mem.Allocator) Error!MessageResult {
     _ = authentication;
     _ = temporary_arena;
@@ -338,6 +380,7 @@ pub fn handleResponse(server: Self, message: ztun.Message, success: bool, authen
     _ = success;
     @panic("Response handling is not implemented");
 }
+
 /// Represents the type of result that can be returned by the server when handling a message.
 pub const MessageResultType = enum {
     discard,
@@ -378,6 +421,7 @@ pub fn handleMessage(self: Self, message: ztun.Message, source: net.Address, all
         .authentication => |authentication| authentication,
     };
 
+    // Handle the message depending on its type.
     return switch (message.type.class) {
         .request => try self.handleRequest(message, source, authentication, message_integrity_details, temp_arena_state.allocator(), allocator),
         .indication => try self.handleIndication(message, authentication, temp_arena_state.allocator(), allocator),

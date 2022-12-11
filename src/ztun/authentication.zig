@@ -6,6 +6,7 @@ const io = @import("io.zig");
 
 /// Stores the parameter required for the Short-term authentication mechanism.
 pub const ShortTermAuthentication = struct {
+    /// Stores the password of the user.
     password: []const u8,
 
     /// Computes the authentication key corresponding to the stored parameters and tries to place the result in the given buffer.
@@ -26,9 +27,13 @@ pub const ShortTermAuthentication = struct {
     }
 };
 
+/// Stores the parameter required for the Long-term authentication mechanism.
 pub const LongTermAuthentication = struct {
+    /// Stores the username of the user.
     username: []const u8,
+    /// Stores the password of the user.
     password: []const u8,
+    /// Stores the realm given to the user.
     realm: []const u8,
 
     /// Computes the authentication key corresponding to the stored parameters and tries to place the result in the given buffer.

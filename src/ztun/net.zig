@@ -3,15 +3,20 @@
 
 const std = @import("std");
 
+// NOTE: This code is greatly inspired/copied from the Zig std lib.
+
+/// Represents an IP address type.
 pub const AddressType = enum {
     ipv4,
     ipv6,
 };
 
+/// Represents an IPv4 address.
 pub const Ipv4Address = struct {
     value: u32,
     port: u16,
 
+    /// Tries to parse an IPv4 address from the given string and with the given.
     pub fn parse(buf: []const u8, port: u16) !Ipv4Address {
         var result = Ipv4Address{
             .value = undefined,

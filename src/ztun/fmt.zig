@@ -4,7 +4,7 @@
 const std = @import("std");
 const ztun = @import("../ztun.zig");
 
-/// Implementation of the formatter below.
+/// Implementation of the `SliceHexSpacedFormatter` formatter.
 pub fn formatSliceHexSpacedImpl(
     bytes: []const u8,
     comptime fmt: []const u8,
@@ -30,13 +30,42 @@ pub fn formatSliceHexSpacedImpl(
 }
 
 /// Formats the given bytes as a space separated list of hexadecimal values.
-pub fn formatSliceHexSpaced(bytes: []const u8) std.fmt.Formatter(formatSliceHexSpacedImpl) {
+pub const SliceHexSpacedFormatter = std.fmt.Formatter(formatSliceHexSpacedImpl);
+
+/// Creates a `SliceHexSpacedFormatter` from the given source.
+pub fn formatSliceHexSpaced(bytes: []const u8) SliceHexSpacedFormatter {
     return .{ .data = bytes };
 }
 
 test "format slice as hex" {
     const input = [_]u8{ 0x01, 0x02, 0x03 };
     try std.testing.expectFmt("0x01 0x02 0x03", "{}", .{formatSliceHexSpaced(&input)});
+}
+
+/// Implementation of the `StringSafeFormatter` formatter.
+pub fn formatStringSafeImpl(bytes: []const u8, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+    _ = options;
+    _ = fmt;
+    for (bytes) |c| {
+        if (std.ascii.isPrint(c)) {
+            try writer.writeByte(c);
+        } else {
+            try writer.print("\\x{x:0>2}", .{c});
+        }
+    }
+}
+
+/// Formats the given bytes as an escaped ascii string.
+pub const StringSafeFormatter = std.fmt.Formatter(formatStringSafeImpl);
+
+/// Creates a `StringSafeFormatter` from the given source.
+pub fn stringSafeFormatter(source: []const u8) StringSafeFormatter {
+    return .{ .data = source };
+}
+
+test "format string safely" {
+    const input = "string\xff";
+    try std.testing.expectFmt("string\\xff", "{}", .{stringSafeFormatter(input)});
 }
 
 fn writeMessageHeader(message: ztun.Message, indentation: usize, writer: anytype) !void {
@@ -73,7 +102,7 @@ fn toTypedAttributeAllocOrWriteError(comptime T: type, attribute: ztun.Attribute
     };
 }
 
-/// Implementation of the formatter below.
+/// Implementation of `MessageFormatter` formatter.
 pub fn formatMessageImpl(message: ztun.Message, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
     _ = options;
     if (std.mem.eql(u8, fmt, "inline")) {
@@ -233,7 +262,9 @@ pub fn formatMessageImpl(message: ztun.Message, comptime fmt: []const u8, option
 /// There are two formating options:
 /// * "inline" will produce the default Zig formatting of the message struct.
 /// * <empty> will produce a human-friendly representation of the message.
-///
-pub fn messageFormatter(message: ztun.Message) std.fmt.Formatter(formatMessageImpl) {
+pub const MessageFormatter = std.fmt.Formatter(formatMessageImpl);
+
+/// Creates a `MessageFormatter` to format a STUN message.
+pub fn messageFormatter(message: ztun.Message) MessageFormatter {
     return .{ .data = message };
 }

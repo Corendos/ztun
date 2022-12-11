@@ -6,15 +6,20 @@ const io = @import("io.zig");
 
 const magic_cookie = @import("constants.zig").magic_cookie;
 
+/// Represents a raw STUN attribute.
 pub const Attribute = struct {
+    /// Stores the type of message.
     type: u16,
+    /// Stores the body of the attribute.
     data: []const u8,
 
+    /// Computes the attribute length in a message (padded to a 4 bytes boundary).
     pub fn length(self: Attribute) usize {
         return 4 + std.mem.alignForward(self.data.len, 4);
     }
 };
 
+/// Common types of stun attributes.
 pub const Type = struct {
     pub const mapped_address = 0x0001;
     pub const xor_mapped_address = 0x0020;
@@ -34,20 +39,25 @@ pub const Type = struct {
     pub const alternate_domain = 0x8003;
 };
 
+/// Returns true if the attribute type is a "Comprehension Required" attribute.
 pub inline fn isComprehensionRequired(value: u16) bool {
     return 0x000 <= value and value < 0x8000;
 }
 
+/// Returns true if the attribute type is a "Comprehension optional" attribute.
 pub inline fn isComprehensionOptional(value: u16) bool {
     return !isComprehensionRequired(value);
 }
 
+/// Writes an attribute to the given writer.
 pub fn write(attribute: Attribute, writer: anytype) !void {
     try writer.writeIntBig(u16, attribute.type);
     try writer.writeIntBig(u16, @intCast(u16, attribute.data.len));
     try io.writeAllAligned(attribute.data, 4, writer);
 }
 
+/// Reads an attribute from the given reader and allocate the required storage using the given allocator.
+/// The attribute owns the allocated memory.
 pub fn readAlloc(reader: anytype, allocator: std.mem.Allocator) !Attribute {
     const @"type" = try reader.readIntBig(u16);
     const len = try reader.readIntBig(u16);
@@ -82,7 +92,16 @@ test "read attribute" {
     try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3 }, attribute.data);
 }
 
+/// Namespace containing the common attribute as typed struct.
+/// The following struct all have a "toAttribute" and a "fromAttribute" method to convert to/from raw attribute.
+/// Some conversions require an allocator to allocate the necessary storage. In that case, the struct owns the memory.
 pub const common = struct {
+    pub const ConversionError = error{
+        InvalidAttribute,
+        NoSpaceLeft,
+        EndOfStream,
+    } || std.mem.Allocator.Error;
+
     pub const AddressFamilyType = enum(u8) {
         ipv4 = 0x01,
         ipv6 = 0x02,
@@ -118,6 +137,7 @@ pub const common = struct {
         }
     };
 
+    /// Represents the MAPPED-ADDRESS attribute.
     pub const MappedAddress = struct {
         family: AddressFamily,
         port: u16,
@@ -165,6 +185,7 @@ pub const common = struct {
         }
     };
 
+    /// Represents the XOR-MAPPED-ADDRESS attribute.
     pub const XorMappedAddress = struct {
         x_family: AddressFamily,
         x_port: u16,
@@ -212,6 +233,7 @@ pub const common = struct {
         }
     };
 
+    /// Encodes a MappedAddress to the corresponding XorMappedAddress.
     pub fn encode(mapped_address: MappedAddress, transaction_id: u96) XorMappedAddress {
         const x_port = mapped_address.port ^ @truncate(u16, (magic_cookie & 0xFFFF0000) >> 16);
 
@@ -229,6 +251,7 @@ pub const common = struct {
         };
     }
 
+    /// Decodes a MappedAddress from the corresponding XorMappedAddress.
     pub fn decode(xor_mapped_address: XorMappedAddress, transaction_id: u96) MappedAddress {
         const port = xor_mapped_address.x_port ^ @truncate(u16, (magic_cookie & 0xFFFF0000) >> 16);
 
@@ -246,6 +269,7 @@ pub const common = struct {
         };
     }
 
+    /// Represents the USERNAME attribute.
     pub const Username = struct {
         value: []const u8,
 
@@ -260,6 +284,7 @@ pub const common = struct {
         }
     };
 
+    /// Represents the USERHASH attribute.
     pub const Userhash = struct {
         value: [32]u8,
 
@@ -281,6 +306,7 @@ pub const common = struct {
         }
     };
 
+    /// Represents the MESSAGE-INTEGRITY attribute.
     pub const MessageIntegrity = struct {
         value: [20]u8,
 
@@ -302,6 +328,7 @@ pub const common = struct {
         }
     };
 
+    /// Represents the MESSAGE-INTEGRITY-SHA256 attribute.
     pub const MessageIntegritySha256 = struct {
         storage: [32]u8,
         length: usize,
@@ -327,6 +354,7 @@ pub const common = struct {
         }
     };
 
+    /// Represents the FINGERPRINT attribute.
     pub const Fingerprint = struct {
         value: u32,
 
@@ -379,6 +407,7 @@ pub const common = struct {
         }
     };
 
+    /// Represents the ERROR-CODE attribute.
     pub const ErrorCode = struct {
         value: RawErrorCode,
         reason: []const u8,
@@ -412,6 +441,7 @@ pub const common = struct {
         }
     };
 
+    /// Represents the REALM attribute.
     pub const Realm = struct {
         value: []const u8,
 
@@ -426,6 +456,7 @@ pub const common = struct {
         }
     };
 
+    /// Represents the NONCE attribute.
     pub const Nonce = struct {
         value: []const u8,
 
@@ -450,6 +481,7 @@ pub const common = struct {
         parameters: []const u8,
     };
 
+    /// Represents the PASSWORD-ALGORITHMS attribute.
     pub const PasswordAlgorithms = struct {
         algorithms: []Algorithm,
 
@@ -504,6 +536,7 @@ pub const common = struct {
         }
     };
 
+    /// Represents the PASSWORD-ALGORITHM attribute.
     pub const PasswordAlgorithm = struct {
         algorithm: Algorithm,
 
@@ -540,6 +573,7 @@ pub const common = struct {
         }
     };
 
+    /// Represents the UNKNOWN-ATTRIBUTEs attribute.
     pub const UnknownAttributes = struct {
         attribute_types: []u16,
 
@@ -574,6 +608,7 @@ pub const common = struct {
         }
     };
 
+    /// Represents the SOFTWARE attribute.
     pub const Software = struct {
         value: []const u8,
 
@@ -588,6 +623,7 @@ pub const common = struct {
         }
     };
 
+    /// Represents the ALTERNATE-SERVER attribute.
     pub const AlternateServer = struct {
         family: AddressFamily,
         port: u16,
@@ -635,6 +671,7 @@ pub const common = struct {
         }
     };
 
+    /// Represents the ALTERNATE-DOMAIN attribute.
     pub const AlternateDomain = struct {
         value: []const u8,
 

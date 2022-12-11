@@ -3,17 +3,27 @@
 
 const std = @import("std");
 
+/// Writes the input bytes to the writer and pad with 0 to align the amount written to the given alignment.
 pub fn writeAllAligned(bytes: []const u8, alignment: usize, writer: anytype) !void {
     try writer.writeAll(bytes);
     const padding = std.mem.alignForward(bytes.len, alignment) - bytes.len;
     try writer.writeByteNTimes(0, padding);
 }
 
+/// Reads enough bytes to fill the buffer (or fail with an error on EOF) and skip bytes to align the amount read
+/// to the given alignment.
 pub fn readNoEofAligned(reader: anytype, alignment: usize, buf: []u8) !void {
     try reader.readNoEof(buf);
     const padding = std.mem.alignForward(buf.len, alignment) - buf.len;
     try reader.skipBytes(@as(u64, padding), .{ .buf_size = 16 });
 }
+
+//
+// WARN(Corendos): This is a WIP
+//
+// This is supposed to implement the computation required to build an OpaqueString as specified in RFC 8265 (https://www.rfc-editor.org/rfc/rfc8265).
+// It's a work in progress as it relies on a lot of other things being defined.
+//
 
 inline fn between(min: u21, max: u21, c: u21) bool {
     return min <= c and c <= max;
@@ -215,7 +225,7 @@ pub fn isFreeFormAsciiString(source: []const u8) bool {
     return true;
 }
 
-/// Compute the OpaqueString profile defined in
+/// Computes the OpaqueString profile defined in
 /// https://www.rfc-editor.org/rfc/rfc8265#section-4.2
 pub fn computeOpaqueString(source: []const u8, out: []u8) ![]u8 {
     var stream = std.io.fixedBufferStream(out);
@@ -223,6 +233,7 @@ pub fn computeOpaqueString(source: []const u8, out: []u8) ![]u8 {
     return stream.getWritten();
 }
 
+/// Writes the OpaqueString produced by the given source to the writer.
 pub fn writeOpaqueString(source: []const u8, writer: anytype) !void {
     // NOTE(Corendos): For now, this will accept only ascii characters
     if (!isFreeFormAsciiString(source)) return error.InvalidString;
@@ -241,6 +252,7 @@ pub fn writeOpaqueString(source: []const u8, writer: anytype) !void {
     }
 }
 
+/// This object is a stream that computes the MD5 checksum of what is written to it.
 pub const Md5Stream = struct {
     state: std.crypto.hash.Md5 = std.crypto.hash.Md5.init(.{}),
 

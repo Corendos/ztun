@@ -16,10 +16,12 @@ pub const fingerprint_magic = constants.fingerprint_magic;
 pub const Attribute = attr.Attribute;
 pub const Server = @import("ztun/Server.zig");
 
+/// Represents the method used in the message. The RFC originally defined only the "binding" method.
 pub const Method = enum(u12) {
     binding = 0b000000000001,
 };
 
+/// Represents the class of the message.
 pub const Class = enum(u2) {
     request = 0b00,
     indication = 0b01,
@@ -27,10 +29,12 @@ pub const Class = enum(u2) {
     error_response = 0b11,
 };
 
+/// Represents the Message Type field of the STUN message header, as defined in Section 5 of the RFC.
 pub const MessageType = struct {
     class: Class,
     method: Method,
 
+    /// Converts the message type to its integer representation.
     pub fn toInteger(self: MessageType) u14 {
         const raw_class = @intCast(u14, @enumToInt(self.class));
         const raw_method = @intCast(u14, @enumToInt(self.method));
@@ -45,6 +49,7 @@ pub const MessageType = struct {
         return raw_value;
     }
 
+    /// Tries to extract a valid Message Type from an input integer. Returns null on failure.
     pub fn tryFromInteger(value: u14) ?MessageType {
         var raw_class = (value & 0b10000) >> 4;
         raw_class |= (value & 0b100000000) >> 7;
@@ -97,14 +102,20 @@ pub const DeserializationError = error{
     UnsupportedMethod,
 } || std.mem.Allocator.Error;
 
+/// Represents a STUN message.
 pub const Message = struct {
     const Self = @This();
 
+    /// The type of the message.
     type: MessageType,
+    /// The transaction ID corresponding to this message.
     transaction_id: u96,
+    /// The length in bytes of the message body (i.e not including the header length).
     length: u16,
+    /// The list of attributes.
     attributes: []const Attribute,
 
+    /// Creates a Message from its components. The length field is computed automatically using the size of the attribute payloads.
     pub fn fromParts(class: Class, method: Method, transaction_id: u96, attributes: []const Attribute) Self {
         var length: u16 = 0;
         for (attributes) |attribute| {
@@ -119,6 +130,8 @@ pub const Message = struct {
         };
     }
 
+    /// Handles the deallocation of the attribute list if it is owned by the message.
+    /// This will free the data of each attribute and then free the attribute list.
     pub fn deinit(self: *const Self, allocator: std.mem.Allocator) void {
         for (self.attributes) |a| {
             allocator.free(a.data);
@@ -126,6 +139,7 @@ pub const Message = struct {
         allocator.free(self.attributes);
     }
 
+    /// Writes the header of the message to the given writer.
     fn writeHeader(self: *const Self, writer: anytype) !void {
         try writer.writeIntBig(u16, @intCast(u16, self.type.toInteger()));
         try writer.writeIntBig(u16, @truncate(u16, self.length));
@@ -200,6 +214,7 @@ pub const Message = struct {
         return hmac_buffer[0..];
     }
 
+    /// Tries to read the message type from the given reader. Returns a descriptive error on failure.
     fn readMessageType(reader: anytype) DeserializationError!MessageType {
         const raw_message_type: u16 = try reader.readIntBig(u16);
         if (raw_message_type & 0b1100_0000_0000_0000 != 0) {
@@ -208,15 +223,8 @@ pub const Message = struct {
         return MessageType.tryFromInteger(@truncate(u14, raw_message_type)) orelse error.UnsupportedMethod;
     }
 
-    fn readKnownAttribute(reader: anytype, attribute_type: attr.Type, length: u16, allocator: std.mem.Allocator) !Attribute {
-        return switch (attribute_type) {
-            inline else => |tag| blk: {
-                const Type = std.meta.TagPayload(Attribute, tag);
-                break :blk @unionInit(Attribute, @tagName(tag), try Type.deserializeAlloc(reader, length, allocator));
-            },
-        };
-    }
-
+    /// Tries to read the message from the given reader, allocating the required storage from the allocator. Returns a descriptive error on failure.
+    /// The returned message is the owner of the attribute list.
     pub fn readAlloc(reader: anytype, allocator: std.mem.Allocator) DeserializationError!Message {
         var attribute_list = std.ArrayList(Attribute).init(allocator);
         defer {
@@ -247,6 +255,7 @@ pub const Message = struct {
     }
 };
 
+/// Convenience helper to build a message.
 pub const MessageBuilder = struct {
     const Self = @This();
 
@@ -254,14 +263,22 @@ pub const MessageBuilder = struct {
 
     /// Allocator that will be used to allocate the required storage for the message.
     allocator: std.mem.Allocator,
+    /// Class of the message.
     class: ?Class = null,
+    /// Method of the message.
     method: ?Method = null,
+    /// Transaction ID of the message.
     transaction_id: ?u96 = null,
+    /// Flag representing the need to add a fingerprint to the message.
     has_fingerprint: bool = false,
+    /// Stores the required parameters to compute the MESSAGE-INTEGRITY value of the message.
     message_integrity: ?auth.Authentication = null,
+    /// Stores the required parameters to compute the MESSAGE-INTEGRITY-SHA256 value of the message.
     message_integrity_sha256: ?auth.Authentication = null,
+    /// The list of attribute to add to the message.
     attribute_list: std.ArrayList(Attribute),
 
+    /// Initializes a builder that will use the given allocator.
     pub fn init(allocator: std.mem.Allocator) Self {
         return Self{
             .allocator = allocator,
@@ -269,26 +286,32 @@ pub const MessageBuilder = struct {
         };
     }
 
+    /// Handles deallocation of everything that has been allocated to build the message and is no longer required.
     pub fn deinit(self: *const Self) void {
         self.attribute_list.deinit();
     }
 
+    /// Adds a random transaction ID to the message.
     pub fn randomTransactionId(self: *Self) void {
         self.transaction_id = std.crypto.random.int(u96);
     }
 
+    /// Adds a specific transaction ID to the message.
     pub fn transactionId(self: *Self, transaction_id: u96) void {
         self.transaction_id = transaction_id;
     }
 
+    /// Sets the class of the message.
     pub fn setClass(self: *Self, class: Class) void {
         self.class = class;
     }
 
+    /// Sets the method of the message.
     pub fn setMethod(self: *Self, method: Method) void {
         self.method = method;
     }
 
+    /// Sets the header directly in one call. If the transaction ID is not given, a random one will be generated.
     pub fn setHeader(self: *Self, method: Method, class: Class, transaction_id_opt: ?u96) void {
         self.setMethod(method);
         self.setClass(class);
@@ -299,22 +322,27 @@ pub const MessageBuilder = struct {
         }
     }
 
+    /// Adds a fingerprint to the message.
     pub fn addFingerprint(self: *Self) void {
         self.has_fingerprint = true;
     }
 
+    /// Adds a MESSAGE-INTEGRITY attribute to the message.
     pub fn addMessageIntegrity(self: *Self, parameters: auth.Authentication) void {
         self.message_integrity = parameters;
     }
 
+    /// Adds a MESSAGE-INTEGRITY-SHA256 attribute to the message.
     pub fn addMessageIntegritySha256(self: *Self, parameters: auth.Authentication) void {
         self.message_integrity_sha256 = parameters;
     }
 
+    /// Adds an attribute to the message.
     pub fn addAttribute(self: *Self, attribute: Attribute) !void {
         try self.attribute_list.append(attribute);
     }
 
+    /// Returns true if the message is sufficiently specified to be generated.
     fn isValid(self: *const Self) bool {
         if (self.class == null or self.method == null or self.transaction_id == null) return false;
         return true;
