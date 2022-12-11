@@ -104,5 +104,5 @@ pub fn main() anyerror!void {
     defer message.deinit(arena_state.allocator());
 
     // Print a human-readable description of the response.
-    std.log.info("{}", .{ztun.fmt.messageFormatter(&message)});
+    std.log.info("{}", .{ztun.fmt.messageFormatter(message)});
 }
