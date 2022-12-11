@@ -250,6 +250,31 @@ pub fn formatMessageImpl(message: ztun.Message, comptime fmt: []const u8, option
                     try writer.writeByteNTimes(' ', 16);
                     try writer.print("Value: {s}\n", .{attribute.data});
                 },
+                @as(u16, ztun.attr.Type.priority) => {
+                    const priority_attribute = try toTypedAttributeOrWriteError(ztun.attr.common.Priority, attribute, writer) orelse continue;
+                    try writer.writeByteNTimes(' ', 16);
+                    try writer.writeAll("Type:  PRIORITY\n");
+                    try writer.writeByteNTimes(' ', 16);
+                    try writer.print("Value: 0x{x}\n", .{priority_attribute.value});
+                },
+                @as(u16, ztun.attr.Type.use_candidate) => {
+                    try writer.writeByteNTimes(' ', 16);
+                    try writer.writeAll("Type: USE-CANDIDATE\n");
+                },
+                @as(u16, ztun.attr.Type.ice_controlled) => {
+                    const ice_controlled_attribute = try toTypedAttributeOrWriteError(ztun.attr.common.IceControlled, attribute, writer) orelse continue;
+                    try writer.writeByteNTimes(' ', 16);
+                    try writer.writeAll("Type:  ICE-CONTROLLED\n");
+                    try writer.writeByteNTimes(' ', 16);
+                    try writer.print("Value: 0x{x}\n", .{ice_controlled_attribute.value});
+                },
+                @as(u16, ztun.attr.Type.ice_controlling) => {
+                    const ice_controlling_attribute = try toTypedAttributeOrWriteError(ztun.attr.common.IceControlling, attribute, writer) orelse continue;
+                    try writer.writeByteNTimes(' ', 16);
+                    try writer.writeAll("Type:  ICE-CONTROLLING\n");
+                    try writer.writeByteNTimes(' ', 16);
+                    try writer.print("Value: 0x{x}\n", .{ice_controlling_attribute.value});
+                },
                 else => {
                     try writeUnknownAttribute(attribute, 16, writer);
                 },

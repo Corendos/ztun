@@ -21,6 +21,7 @@ pub const Attribute = struct {
 
 /// Common types of stun attributes.
 pub const Type = struct {
+    // RFC 8489
     pub const mapped_address = 0x0001;
     pub const xor_mapped_address = 0x0020;
     pub const username = 0x0006;
@@ -37,6 +38,12 @@ pub const Type = struct {
     pub const software = 0x8022;
     pub const alternate_server = 0x8023;
     pub const alternate_domain = 0x8003;
+
+    // RFC 8445
+    pub const priority = 0x0024;
+    pub const use_candidate = 0x0025;
+    pub const ice_controlled = 0x8029;
+    pub const ice_controlling = 0x802A;
 };
 
 /// Returns true if the attribute type is a "Comprehension Required" attribute.
@@ -685,6 +692,95 @@ pub const common = struct {
             return Attribute{ .type = Type.alternate_domain, .data = try allocator.dupe(u8, self.value) };
         }
     };
+
+    /// Represents the PRIORITY attribute.
+    pub const Priority = struct {
+        value: u32,
+
+        pub fn fromAttribute(attribute: Attribute) ConversionError!Priority {
+            if (attribute.type != Type.priority) return error.InvalidAttribute;
+
+            var stream = std.io.fixedBufferStream(attribute.data);
+            var reader = stream.reader();
+            const value = reader.readIntBig(u32) catch return error.InvalidAttribute;
+            return Priority{ .value = value };
+        }
+
+        pub fn toAttribute(self: Priority, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
+            var data = try allocator.alloc(u8, 4);
+            errdefer allocator.free(data);
+
+            var stream = std.io.fixedBufferStream(data);
+            var writer = stream.writer();
+            writer.writeIntBig(u32, self.value) catch unreachable;
+
+            return Attribute{ .type = Type.priority, .data = data };
+        }
+    };
+
+    /// Represents the USE-CANDIDATE attribute.
+    pub const UseCandidate = struct {
+        pub fn fromAttribute(attribute: Attribute) ConversionError!UseCandidate {
+            if (attribute.type != Type.use_candidate) return error.InvalidAttribute;
+            return UseCandidate{};
+        }
+
+        pub fn toAttribute(self: UseCandidate, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
+            _ = allocator;
+            _ = self;
+            return Attribute{ .type = Type.use_candidate, .data = &.{} };
+        }
+    };
+
+    /// Represents the ICE-CONTROLLED attribute.
+    pub const IceControlled = struct {
+        value: u64,
+
+        pub fn fromAttribute(attribute: Attribute) ConversionError!IceControlled {
+            if (attribute.type != Type.ice_controlled) return error.InvalidAttribute;
+
+            var stream = std.io.fixedBufferStream(attribute.data);
+            var reader = stream.reader();
+            const value = reader.readIntBig(u64) catch return error.InvalidAttribute;
+            return IceControlled{ .value = value };
+        }
+
+        pub fn toAttribute(self: IceControlled, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
+            var data = try allocator.alloc(u8, 8);
+            errdefer allocator.free(data);
+
+            var stream = std.io.fixedBufferStream(data);
+            var writer = stream.writer();
+            writer.writeIntBig(u64, self.value) catch unreachable;
+
+            return Attribute{ .type = Type.ice_controlled, .data = data };
+        }
+    };
+
+    /// Represents the ICE-CONTROLLING attribute.
+    pub const IceControlling = struct {
+        value: u64,
+
+        pub fn fromAttribute(attribute: Attribute) ConversionError!IceControlling {
+            if (attribute.type != Type.ice_controlling) return error.InvalidAttribute;
+
+            var stream = std.io.fixedBufferStream(attribute.data);
+            var reader = stream.reader();
+            const value = reader.readIntBig(u64) catch return error.InvalidAttribute;
+            return IceControlling{ .value = value };
+        }
+
+        pub fn toAttribute(self: IceControlling, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
+            var data = try allocator.alloc(u8, 8);
+            errdefer allocator.free(data);
+
+            var stream = std.io.fixedBufferStream(data);
+            var writer = stream.writer();
+            writer.writeIntBig(u64, self.value) catch unreachable;
+
+            return Attribute{ .type = Type.ice_controlling, .data = data };
+        }
+    };
 };
 
 test "MAPPED-ADDRESS deserialization" {
@@ -1204,4 +1300,75 @@ test "ALTERNATE-DOMAIN deserialization" {
     const alternate_domain_attribute = try common.AlternateDomain.fromAttribute(attribute);
 
     try std.testing.expectEqualStrings("lost.io", alternate_domain_attribute.value);
+}
+
+test "PRIORITY deserialization" {
+    const buffer = [_]u8{
+        // Header
+        0x00, 0x24,
+        0x00, 0x04,
+        // Value
+        0x01, 0x02,
+        0x03, 0x04,
+    };
+    var stream = std.io.fixedBufferStream(&buffer);
+    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    defer std.testing.allocator.free(attribute.data);
+
+    const priority_attribute = try common.Priority.fromAttribute(attribute);
+
+    try std.testing.expectEqual(@as(u32, 0x01020304), priority_attribute.value);
+}
+
+test "USE-CANDIDATE deserialization" {
+    const buffer = [_]u8{
+        // Header
+        0x00, 0x25,
+        0x00, 0x00,
+    };
+    var stream = std.io.fixedBufferStream(&buffer);
+    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    defer std.testing.allocator.free(attribute.data);
+
+    _ = try common.UseCandidate.fromAttribute(attribute);
+}
+
+test "ICE-CONTROLLED deserialization" {
+    const buffer = [_]u8{
+        // Header
+        0x80, 0x29,
+        0x00, 0x08,
+        // Value
+        0x01, 0x02,
+        0x03, 0x04,
+        0x05, 0x06,
+        0x07, 0x08,
+    };
+    var stream = std.io.fixedBufferStream(&buffer);
+    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    defer std.testing.allocator.free(attribute.data);
+
+    const ice_controlled_attribute = try common.IceControlled.fromAttribute(attribute);
+
+    try std.testing.expectEqual(@as(u64, 0x0102030405060708), ice_controlled_attribute.value);
+}
+
+test "ICE-CONTROLLING deserialization" {
+    const buffer = [_]u8{
+        // Header
+        0x80, 0x2A,
+        0x00, 0x08,
+        // Value
+        0x01, 0x02,
+        0x03, 0x04,
+        0x05, 0x06,
+        0x07, 0x08,
+    };
+    var stream = std.io.fixedBufferStream(&buffer);
+    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    defer std.testing.allocator.free(attribute.data);
+
+    const ice_controlling_attribute = try common.IceControlling.fromAttribute(attribute);
+
+    try std.testing.expectEqual(@as(u64, 0x0102030405060708), ice_controlling_attribute.value);
 }
