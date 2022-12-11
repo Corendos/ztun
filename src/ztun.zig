@@ -62,16 +62,40 @@ pub const MessageType = struct {
     }
 };
 
+test "message type to integer" {
+    {
+        const message_type = MessageType{ .class = .request, .method = .binding };
+        const message_type_as_u16 = @intCast(u16, message_type.toInteger());
+        try std.testing.expectEqual(@as(u16, 0x0001), message_type_as_u16);
+    }
+    {
+        const message_type = MessageType{ .class = .success_response, .method = .binding };
+        const message_type_as_u16 = @intCast(u16, message_type.toInteger());
+        try std.testing.expectEqual(@as(u16, 0x0101), message_type_as_u16);
+    }
+}
+
+test "integer to message type" {
+    {
+        const raw_message_type: u16 = 0x0001;
+        const message_type = MessageType.tryFromInteger(@truncate(u14, raw_message_type));
+        try std.testing.expect(message_type != null);
+        try std.testing.expectEqual(MessageType{ .class = .request, .method = .binding }, message_type.?);
+    }
+    {
+        const raw_message_type: u16 = 0x0101;
+        const message_type = MessageType.tryFromInteger(@truncate(u14, raw_message_type));
+        try std.testing.expect(message_type != null);
+        try std.testing.expectEqual(MessageType{ .class = .success_response, .method = .binding }, message_type.?);
+    }
+}
+
 pub const DeserializationError = error{
-    OutOfMemory,
     EndOfStream,
-    NotImplemented,
     NonZeroStartingBits,
     WrongMagicCookie,
     UnsupportedMethod,
-    UnknownAttribute,
-    InvalidAttributeFormat,
-};
+} || std.mem.Allocator.Error;
 
 pub const Message = struct {
     const Self = @This();
@@ -109,18 +133,23 @@ pub const Message = struct {
         try writer.writeIntBig(u96, self.transaction_id);
     }
 
+    /// Writes the list of attributes to the given writer.
     fn writeAttributes(self: *const Self, writer: anytype) !void {
         for (self.attributes) |attribute| {
             try attr.write(attribute, writer);
         }
     }
 
+    /// Writes the whole message to the given writer.
     pub fn write(self: *const Self, writer: anytype) !void {
         try self.writeHeader(writer);
         try self.writeAttributes(writer);
     }
 
-    pub fn computeFingerprint(self: *const Self, temp_allocator: std.mem.Allocator) !u32 {
+    /// Computes the fingerprint value corresponding to the message. It computes the adjusted length value to produce a valid value.
+    /// It returns a value that can be used directly in a FINGERPRINT attribute added to the list of attributes.
+    /// This requires a temporary allocator to handle message serialization.
+    pub fn computeFingerprint(self: *const Self, temp_allocator: std.mem.Allocator) error{OutOfMemory}!u32 {
         var buffer = try temp_allocator.alloc(u8, 2048);
         defer temp_allocator.free(buffer);
 
@@ -128,26 +157,38 @@ pub const Message = struct {
         // Take fingerprint into account
         message.length += 8;
         var stream = std.io.fixedBufferStream(buffer);
-        try message.write(stream.writer());
+        message.write(stream.writer()) catch unreachable;
         return std.hash.Crc32.hash(stream.getWritten()) ^ @as(u32, fingerprint_magic);
     }
 
-    pub fn computeMessageIntegrity(self: *const Self, temp_allocator: std.mem.Allocator, storage: *[20]u8, key: []const u8) ![]u8 {
-        var buffer = try temp_allocator.alloc(u8, 2048);
-        defer temp_allocator.free(buffer);
+    /// Computes the message integrity value corresponding to the message. It computes the adjusted length value to produce a valid value.
+    /// It returns a value that can be used directly in a MESSAGE-INTEGRITY attribute added to the list of attributes.
+    /// The storage for the returned value is allocated from the given allocator and ownership is granted.
+    pub fn computeMessageIntegrity(self: *const Self, allocator: std.mem.Allocator, key: []const u8) error{OutOfMemory}![]u8 {
+        var hmac_buffer = try allocator.alloc(u8, 20);
+        errdefer allocator.free(hmac_buffer);
+
+        var buffer = try allocator.alloc(u8, 2048);
+        defer allocator.free(buffer);
 
         var message = self.*;
         // Take message integrity into account
         message.length += 24;
         var stream = std.io.fixedBufferStream(buffer);
         message.write(stream.writer()) catch unreachable;
-        std.crypto.auth.hmac.HmacSha1.create(storage, stream.getWritten(), key);
-        return storage[0..20];
+        std.crypto.auth.hmac.HmacSha1.create(hmac_buffer[0..20], stream.getWritten(), key);
+        return hmac_buffer[0..20];
     }
 
-    pub fn computeMessageIntegritySha256(self: *const Self, temp_allocator: std.mem.Allocator, storage: *[32]u8, key: []const u8) ![]u8 {
-        var buffer = try temp_allocator.alloc(u8, 2048);
-        defer temp_allocator.free(buffer);
+    /// Computes the SHA256 message integrity value corresponding to the message. It computes the adjusted length value to produce a valid value.
+    /// It returns a value that can be used directly in a MESSAGE-INTEGRITY-SHA256 attribute added to the list of attributes.
+    /// The storage for the returned value is allocated from the given allocator and ownership is granted.
+    pub fn computeMessageIntegritySha256(self: *const Self, allocator: std.mem.Allocator, key: []const u8) error{OutOfMemory}![]u8 {
+        var hmac_buffer = try allocator.alloc(u8, 32);
+        errdefer allocator.free(hmac_buffer);
+
+        var buffer = try allocator.alloc(u8, 2048);
+        defer allocator.free(buffer);
 
         var message = self.*;
         // Take message integrity into account
@@ -155,8 +196,8 @@ pub const Message = struct {
         var stream = std.io.fixedBufferStream(buffer);
         message.write(stream.writer()) catch unreachable;
         const written = stream.getWritten();
-        std.crypto.auth.hmac.sha2.HmacSha256.create(storage, written, key);
-        return storage[0..];
+        std.crypto.auth.hmac.sha2.HmacSha256.create(hmac_buffer[0..32], written, key);
+        return hmac_buffer[0..];
     }
 
     fn readMessageType(reader: anytype) DeserializationError!MessageType {
@@ -209,6 +250,9 @@ pub const Message = struct {
 pub const MessageBuilder = struct {
     const Self = @This();
 
+    pub const Error = error{ InvalidMessage, InvalidString, NoSpaceLeft } || std.mem.Allocator.Error;
+
+    /// Allocator that will be used to allocate the required storage for the message.
     allocator: std.mem.Allocator,
     class: ?Class = null,
     method: ?Method = null,
@@ -276,13 +320,16 @@ pub const MessageBuilder = struct {
         return true;
     }
 
-    fn computeMessageIntegrity(self: *Self, parameters: auth.Authentication, temp_allocator: std.mem.Allocator) !void {
-        var storage: [128]u8 = undefined;
-        const hmac_key = parameters.computeKey(&storage) catch unreachable;
+    /// Compute the MESSAGE-INTEGRITY value of the message using the given parameters.
+    /// It requires a temporary allocator to handle the serialization of the message.
+    fn computeMessageIntegrity(self: *Self, parameters: auth.Authentication, temp_allocator: std.mem.Allocator) Error!void {
+        const hmac_key = try parameters.computeKeyAlloc(temp_allocator);
+        defer temp_allocator.free(hmac_key);
 
         var message_integrity_attribute: attr.common.MessageIntegrity = undefined;
         const message = Message.fromParts(self.class.?, self.method.?, self.transaction_id.?, self.attribute_list.items);
-        _ = message.computeMessageIntegrity(temp_allocator, &message_integrity_attribute.value, hmac_key.value) catch unreachable;
+        const hmac = message.computeMessageIntegrity(temp_allocator, hmac_key) catch unreachable;
+        std.mem.copy(u8, message_integrity_attribute.value[0..], hmac);
 
         const attribute = try message_integrity_attribute.toAttribute(self.allocator);
         errdefer self.allocator.free(attribute.data);
@@ -290,13 +337,16 @@ pub const MessageBuilder = struct {
         try self.addAttribute(attribute);
     }
 
-    fn computeMessageIntegritySha256(self: *Self, parameters: auth.Authentication, temp_allocator: std.mem.Allocator) !void {
-        var storage: [128]u8 = undefined;
-        const hmac_key = parameters.computeKey(&storage) catch unreachable;
+    /// Compute the MESSAGE-INTEGRITY-SHA256 value of the message using the given parameters.
+    /// It requires a temporary allocator to handle the serialization of the message.
+    fn computeMessageIntegritySha256(self: *Self, parameters: auth.Authentication, temp_allocator: std.mem.Allocator) Error!void {
+        const hmac_key = try parameters.computeKeyAlloc(temp_allocator);
+        defer temp_allocator.free(hmac_key);
 
         var message_integrity_sha256_attribute: attr.common.MessageIntegritySha256 = undefined;
         const message = Message.fromParts(self.class.?, self.method.?, self.transaction_id.?, self.attribute_list.items);
-        const hmac = message.computeMessageIntegritySha256(temp_allocator, &message_integrity_sha256_attribute.storage, hmac_key.value) catch unreachable;
+        const hmac = message.computeMessageIntegritySha256(temp_allocator, hmac_key) catch unreachable;
+        std.mem.copy(u8, message_integrity_sha256_attribute.storage[0..], hmac);
         message_integrity_sha256_attribute.length = hmac.len;
 
         const attribute = try message_integrity_sha256_attribute.toAttribute(self.allocator);
@@ -305,10 +355,13 @@ pub const MessageBuilder = struct {
         try self.addAttribute(attribute);
     }
 
-    pub fn build(self: *Self) !Message {
+    /// Tries to build a message using the currently set parameters. Returns a descriptive error in case of failure.
+    /// The message is the owner of the allocation done using the builder's allocator.
+    /// This takes care of adding the FINGERPRINT, MESSAGE-INTEGRITY(-SHA256) attributes to the message with the correct location and value.
+    pub fn build(self: *Self) Error!Message {
         if (!self.isValid()) return error.InvalidMessage;
-        var buffer: [2048]u8 = undefined;
-        var arena_state = std.heap.FixedBufferAllocator.init(&buffer);
+        var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena_state.deinit();
 
         if (self.message_integrity) |parameters| {
             try self.computeMessageIntegrity(parameters, arena_state.allocator());
@@ -330,83 +383,6 @@ pub const MessageBuilder = struct {
         return Message.fromParts(self.class.?, self.method.?, self.transaction_id.?, self.attribute_list.toOwnedSlice());
     }
 };
-
-test "initialize indication message" {
-    var message_builder = MessageBuilder.init(std.testing.allocator);
-    defer message_builder.deinit();
-
-    message_builder.setClass(.indication);
-    message_builder.setMethod(.binding);
-    message_builder.transactionId(0x42);
-    const message = try message_builder.build();
-    try std.testing.expectEqual(MessageType{ .class = .indication, .method = .binding }, message.type);
-    try std.testing.expectEqual(@as(u96, 0x42), message.transaction_id);
-}
-
-test "initialize request message" {
-    var message_builder = MessageBuilder.init(std.testing.allocator);
-    defer message_builder.deinit();
-
-    message_builder.setClass(.request);
-    message_builder.setMethod(.binding);
-    message_builder.transactionId(0x42);
-    const message = try message_builder.build();
-    try std.testing.expectEqual(MessageType{ .class = .request, .method = .binding }, message.type);
-    try std.testing.expectEqual(@as(u96, 0x42), message.transaction_id);
-}
-
-test "initialize response message" {
-    const success_response = blk: {
-        var message_builder = MessageBuilder.init(std.testing.allocator);
-        defer message_builder.deinit();
-
-        message_builder.setClass(.success_response);
-        message_builder.setMethod(.binding);
-        message_builder.transactionId(0x42);
-        break :blk try message_builder.build();
-    };
-    try std.testing.expectEqual(MessageType{ .class = .success_response, .method = .binding }, success_response.type);
-    try std.testing.expectEqual(@as(u96, 0x42), success_response.transaction_id);
-    const error_response = blk: {
-        var message_builder = MessageBuilder.init(std.testing.allocator);
-        defer message_builder.deinit();
-
-        message_builder.setClass(.error_response);
-        message_builder.setMethod(.binding);
-        message_builder.transactionId(0x42);
-        break :blk try message_builder.build();
-    };
-    try std.testing.expectEqual(MessageType{ .class = .error_response, .method = .binding }, error_response.type);
-    try std.testing.expectEqual(@as(u96, 0x42), error_response.transaction_id);
-}
-
-test "message type to integer" {
-    {
-        const message_type = MessageType{ .class = .request, .method = .binding };
-        const message_type_as_u16 = @intCast(u16, message_type.toInteger());
-        try std.testing.expectEqual(@as(u16, 0x0001), message_type_as_u16);
-    }
-    {
-        const message_type = MessageType{ .class = .success_response, .method = .binding };
-        const message_type_as_u16 = @intCast(u16, message_type.toInteger());
-        try std.testing.expectEqual(@as(u16, 0x0101), message_type_as_u16);
-    }
-}
-
-test "integer to message type" {
-    {
-        const raw_message_type: u16 = 0x0001;
-        const message_type = MessageType.tryFromInteger(@truncate(u14, raw_message_type));
-        try std.testing.expect(message_type != null);
-        try std.testing.expectEqual(MessageType{ .class = .request, .method = .binding }, message_type.?);
-    }
-    {
-        const raw_message_type: u16 = 0x0101;
-        const message_type = MessageType.tryFromInteger(@truncate(u14, raw_message_type));
-        try std.testing.expect(message_type != null);
-        try std.testing.expectEqual(MessageType{ .class = .success_response, .method = .binding }, message_type.?);
-    }
-}
 
 test "Message fingeprint" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);

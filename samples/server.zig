@@ -60,15 +60,39 @@ pub fn main() anyerror!void {
         for (fds) |*entry| {
             if (entry.revents & linux.POLL.IN > 0) {
                 // Receive the message in the previously allocated buffer.
-                const message = utils.receiveFrom(entry.fd, receive_buffer) catch |err| {
+                const raw_message = utils.receiveFrom(entry.fd, receive_buffer) catch |err| {
                     std.log.err("{}", .{err});
                     continue;
                 };
 
+                const message = blk: {
+                    var stream = std.io.fixedBufferStream(raw_message.data);
+                    break :blk ztun.Message.readAlloc(stream.reader(), arena_state.allocator()) catch |err| {
+                        std.log.err("{}", .{err});
+                        continue;
+                    };
+                };
+
+                const message_result = server.handleMessage(message, raw_message.source, arena_state.allocator()) catch |err| {
+                    std.log.err("{}", .{err});
+                    continue;
+                };
                 // Process the message and return the response if there is one to send.
-                if (server.processRawMessage(message.data, message.source, arena_state.allocator())) |response| {
-                    try utils.sendTo(entry.fd, response, message.source);
-                    arena_state.allocator().free(response);
+                switch (message_result) {
+                    .ok => {},
+                    .discard => {},
+                    .response => |response| {
+                        var buffer = arena_state.allocator().alloc(u8, 2048) catch |err| {
+                            std.log.err("{}", .{err});
+                            continue;
+                        };
+                        var stream = std.io.fixedBufferStream(buffer);
+                        response.write(stream.writer()) catch |err| {
+                            std.log.err("{}", .{err});
+                            continue;
+                        };
+                        try utils.sendTo(entry.fd, stream.getWritten(), raw_message.source);
+                    },
                 }
             }
         }

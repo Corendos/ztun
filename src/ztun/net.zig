@@ -65,40 +65,14 @@ pub const Ipv4Address = struct {
     }
 };
 
+/// Represents an IPv6 address.
 pub const Ipv6Address = struct {
     value: u128,
     port: u16,
     flowinfo: u32 = 0,
     scope_id: u32 = 0,
 
-    pub fn format(self: Ipv6Address, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
-        _ = options;
-        _ = fmt;
-        const raw = @bitCast([16]u8, std.mem.nativeToBig(u128, self.value));
-        try writer.print("[{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}", .{
-            raw[0],
-            raw[1],
-            raw[2],
-            raw[3],
-            raw[4],
-            raw[5],
-            raw[6],
-            raw[7],
-            raw[8],
-            raw[9],
-            raw[10],
-            raw[11],
-            raw[12],
-            raw[13],
-            raw[14],
-            raw[15],
-        });
-        if (self.scope_id != 0) {
-            try writer.print("%{}", .{self.scope_id});
-        }
-        try writer.print("]:{}", .{self.port});
-    }
-
+    /// Tries to parse an IPv4 address from the given string and with the given.
     pub fn parse(buf: []const u8, port: u16) !Ipv6Address {
         var result = Ipv6Address{
             .value = undefined,
@@ -203,8 +177,37 @@ pub const Ipv6Address = struct {
         result.value = std.mem.bigToNative(u128, @bitCast(u128, output));
         return result;
     }
+
+    pub fn format(self: Ipv6Address, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+        _ = options;
+        _ = fmt;
+        const raw = @bitCast([16]u8, std.mem.nativeToBig(u128, self.value));
+        try writer.print("[{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}", .{
+            raw[0],
+            raw[1],
+            raw[2],
+            raw[3],
+            raw[4],
+            raw[5],
+            raw[6],
+            raw[7],
+            raw[8],
+            raw[9],
+            raw[10],
+            raw[11],
+            raw[12],
+            raw[13],
+            raw[14],
+            raw[15],
+        });
+        if (self.scope_id != 0) {
+            try writer.print("%{}", .{self.scope_id});
+        }
+        try writer.print("]:{}", .{self.port});
+    }
 };
 
+/// Represents an IP address that can be IPv4 or IPv6.
 pub const Address = union(enum) {
     ipv4: Ipv4Address,
     ipv6: Ipv6Address,

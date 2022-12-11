@@ -122,7 +122,7 @@ pub const common = struct {
         family: AddressFamily,
         port: u16,
 
-        pub fn fromAttribute(attribute: Attribute) !MappedAddress {
+        pub fn fromAttribute(attribute: Attribute) ConversionError!MappedAddress {
             if (attribute.type != Type.mapped_address) return error.InvalidAttribute;
 
             var stream = std.io.fixedBufferStream(attribute.data);
@@ -143,7 +143,7 @@ pub const common = struct {
             }
         }
 
-        pub fn toAttribute(self: MappedAddress, allocator: std.mem.Allocator) !Attribute {
+        pub fn toAttribute(self: MappedAddress, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
             const data_size = 4 + @as(usize, switch (self.family) {
                 .ipv4 => 4,
                 .ipv6 => 16,
@@ -169,7 +169,7 @@ pub const common = struct {
         x_family: AddressFamily,
         x_port: u16,
 
-        pub fn fromAttribute(attribute: Attribute) !XorMappedAddress {
+        pub fn fromAttribute(attribute: Attribute) ConversionError!XorMappedAddress {
             if (attribute.type != Type.xor_mapped_address) return error.InvalidAttribute;
 
             var stream = std.io.fixedBufferStream(attribute.data);
@@ -190,7 +190,7 @@ pub const common = struct {
             }
         }
 
-        pub fn toAttribute(self: XorMappedAddress, allocator: std.mem.Allocator) !Attribute {
+        pub fn toAttribute(self: XorMappedAddress, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
             const data_size = 4 + @as(usize, switch (self.x_family) {
                 .ipv4 => 4,
                 .ipv6 => 16,
@@ -249,13 +249,13 @@ pub const common = struct {
     pub const Username = struct {
         value: []const u8,
 
-        pub fn fromAttribute(attribute: Attribute) !Username {
+        pub fn fromAttribute(attribute: Attribute) ConversionError!Username {
             if (attribute.type != Type.username) return error.InvalidAttribute;
 
             return Username{ .value = attribute.data };
         }
 
-        pub fn toAttribute(self: Username, allocator: std.mem.Allocator) !Attribute {
+        pub fn toAttribute(self: Username, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
             return Attribute{ .type = Type.username, .data = try allocator.dupe(u8, self.value) };
         }
     };
@@ -263,7 +263,7 @@ pub const common = struct {
     pub const Userhash = struct {
         value: [32]u8,
 
-        pub fn fromAttribute(attribute: Attribute) !Userhash {
+        pub fn fromAttribute(attribute: Attribute) ConversionError!Userhash {
             if (attribute.type != Type.userhash) return error.InvalidAttribute;
             if (attribute.data.len != 32) return error.InvalidAttribute;
             var self: Userhash = undefined;
@@ -271,7 +271,7 @@ pub const common = struct {
             return self;
         }
 
-        pub fn toAttribute(self: Userhash, allocator: std.mem.Allocator) !Attribute {
+        pub fn toAttribute(self: Userhash, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
             var data = try allocator.alloc(u8, self.value.len);
             errdefer allocator.free(data);
 
@@ -284,7 +284,7 @@ pub const common = struct {
     pub const MessageIntegrity = struct {
         value: [20]u8,
 
-        pub fn fromAttribute(attribute: Attribute) !MessageIntegrity {
+        pub fn fromAttribute(attribute: Attribute) ConversionError!MessageIntegrity {
             if (attribute.type != Type.message_integrity) return error.InvalidAttribute;
             if (attribute.data.len != 20) return error.InvalidAttribute;
             var self: MessageIntegrity = undefined;
@@ -292,7 +292,7 @@ pub const common = struct {
             return self;
         }
 
-        pub fn toAttribute(self: MessageIntegrity, allocator: std.mem.Allocator) !Attribute {
+        pub fn toAttribute(self: MessageIntegrity, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
             var data = try allocator.alloc(u8, self.value.len);
             errdefer allocator.free(data);
 
@@ -306,7 +306,7 @@ pub const common = struct {
         storage: [32]u8,
         length: usize,
 
-        pub fn fromAttribute(attribute: Attribute) !MessageIntegritySha256 {
+        pub fn fromAttribute(attribute: Attribute) ConversionError!MessageIntegritySha256 {
             if (attribute.type != Type.message_integrity_sha256) return error.InvalidAttribute;
             if (attribute.data.len > 32) return error.InvalidAttribute;
             var self = MessageIntegritySha256{
@@ -317,7 +317,7 @@ pub const common = struct {
             return self;
         }
 
-        pub fn toAttribute(self: MessageIntegritySha256, allocator: std.mem.Allocator) !Attribute {
+        pub fn toAttribute(self: MessageIntegritySha256, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
             var data = try allocator.alloc(u8, self.length);
             errdefer allocator.free(data);
 
@@ -330,7 +330,7 @@ pub const common = struct {
     pub const Fingerprint = struct {
         value: u32,
 
-        pub fn fromAttribute(attribute: Attribute) !Fingerprint {
+        pub fn fromAttribute(attribute: Attribute) ConversionError!Fingerprint {
             if (attribute.type != Type.fingerprint) return error.InvalidAttribute;
             var stream = std.io.fixedBufferStream(attribute.data);
             var reader = stream.reader();
@@ -341,7 +341,7 @@ pub const common = struct {
             };
         }
 
-        pub fn toAttribute(self: Fingerprint, allocator: std.mem.Allocator) !Attribute {
+        pub fn toAttribute(self: Fingerprint, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
             var data = try allocator.alloc(u8, 4);
             errdefer allocator.free(data);
 
@@ -371,7 +371,7 @@ pub const common = struct {
         server_error = rawErrorCodeFromClassAndNumber(5, 0),
 
         pub inline fn class(self: RawErrorCode) u3 {
-            return @intCast(u3, @as(u32, @enumToInt(self)) & 0b11100000000 >> 8);
+            return @intCast(u3, (@as(u32, @enumToInt(self)) & 0b11100000000) >> 8);
         }
 
         pub inline fn number(self: RawErrorCode) u8 {
@@ -383,7 +383,7 @@ pub const common = struct {
         value: RawErrorCode,
         reason: []const u8,
 
-        pub fn fromAttribute(attribute: Attribute) !ErrorCode {
+        pub fn fromAttribute(attribute: Attribute) ConversionError!ErrorCode {
             if (attribute.type != Type.error_code) return error.InvalidAttribute;
             var stream = std.io.fixedBufferStream(attribute.data);
             var reader = stream.reader();
@@ -398,7 +398,7 @@ pub const common = struct {
             return ErrorCode{ .value = raw_error_code, .reason = reason };
         }
 
-        pub fn toAttribute(self: ErrorCode, allocator: std.mem.Allocator) !Attribute {
+        pub fn toAttribute(self: ErrorCode, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
             var data = try allocator.alloc(u8, 4 + self.reason.len);
             errdefer allocator.free(data);
 
@@ -415,13 +415,13 @@ pub const common = struct {
     pub const Realm = struct {
         value: []const u8,
 
-        pub fn fromAttribute(attribute: Attribute) !Realm {
+        pub fn fromAttribute(attribute: Attribute) ConversionError!Realm {
             if (attribute.type != Type.realm) return error.InvalidAttribute;
 
             return Realm{ .value = attribute.data };
         }
 
-        pub fn toAttribute(self: Realm, allocator: std.mem.Allocator) !Attribute {
+        pub fn toAttribute(self: Realm, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
             return Attribute{ .type = Type.realm, .data = try allocator.dupe(u8, self.value) };
         }
     };
@@ -429,13 +429,13 @@ pub const common = struct {
     pub const Nonce = struct {
         value: []const u8,
 
-        pub fn fromAttribute(attribute: Attribute) !Nonce {
+        pub fn fromAttribute(attribute: Attribute) ConversionError!Nonce {
             if (attribute.type != Type.nonce) return error.InvalidAttribute;
 
             return Nonce{ .value = attribute.data };
         }
 
-        pub fn toAttribute(self: Nonce, allocator: std.mem.Allocator) !Attribute {
+        pub fn toAttribute(self: Nonce, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
             return Attribute{ .type = Type.nonce, .data = try allocator.dupe(u8, self.value) };
         }
     };
@@ -453,7 +453,7 @@ pub const common = struct {
     pub const PasswordAlgorithms = struct {
         algorithms: []Algorithm,
 
-        pub fn fromAttribute(attribute: Attribute, allocator: std.mem.Allocator) !PasswordAlgorithms {
+        pub fn fromAttribute(attribute: Attribute, allocator: std.mem.Allocator) ConversionError!PasswordAlgorithms {
             if (attribute.type != Type.password_algorithms) return error.InvalidAttribute;
 
             var stream = std.io.fixedBufferStream(attribute.data);
@@ -483,7 +483,7 @@ pub const common = struct {
             return PasswordAlgorithms{ .algorithms = algorithms };
         }
 
-        pub fn toAttribute(self: PasswordAlgorithms, allocator: std.mem.Allocator) !Attribute {
+        pub fn toAttribute(self: PasswordAlgorithms, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
             var data_size: usize = 0;
             for (self.algorithms) |algorithm| {
                 data_size += 4 + std.mem.alignForward(algorithm.parameters.len, 4);
@@ -507,7 +507,7 @@ pub const common = struct {
     pub const PasswordAlgorithm = struct {
         algorithm: Algorithm,
 
-        pub fn fromAttribute(attribute: Attribute) !PasswordAlgorithm {
+        pub fn fromAttribute(attribute: Attribute) ConversionError!PasswordAlgorithm {
             if (attribute.type != Type.password_algorithm) return error.InvalidAttribute;
 
             var stream = std.io.fixedBufferStream(attribute.data);
@@ -525,7 +525,7 @@ pub const common = struct {
             return PasswordAlgorithm{ .algorithm = algorithm };
         }
 
-        pub fn toAttribute(self: PasswordAlgorithm, allocator: std.mem.Allocator) !Attribute {
+        pub fn toAttribute(self: PasswordAlgorithm, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
             var data = try allocator.alloc(u8, 4 + std.mem.alignForward(self.algorithm.parameters.len, 4));
             errdefer allocator.free(data);
 
@@ -543,7 +543,7 @@ pub const common = struct {
     pub const UnknownAttributes = struct {
         attribute_types: []u16,
 
-        pub fn fromAttribute(attribute: Attribute, allocator: std.mem.Allocator) !UnknownAttributes {
+        pub fn fromAttribute(attribute: Attribute, allocator: std.mem.Allocator) ConversionError!UnknownAttributes {
             if (attribute.type != Type.unknown_attributes) return error.InvalidAttribute;
 
             var attribute_types = try allocator.alloc(u16, attribute.data.len / 2);
@@ -559,7 +559,7 @@ pub const common = struct {
             return UnknownAttributes{ .attribute_types = attribute_types };
         }
 
-        pub fn toAttribute(self: UnknownAttributes, allocator: std.mem.Allocator) !Attribute {
+        pub fn toAttribute(self: UnknownAttributes, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
             var data = try allocator.alloc(u8, self.attribute_types.len * 2);
             errdefer allocator.free(data);
 
@@ -577,13 +577,13 @@ pub const common = struct {
     pub const Software = struct {
         value: []const u8,
 
-        pub fn fromAttribute(attribute: Attribute) !Software {
+        pub fn fromAttribute(attribute: Attribute) ConversionError!Software {
             if (attribute.type != Type.software) return error.InvalidAttribute;
 
             return Software{ .value = attribute.data };
         }
 
-        pub fn toAttribute(self: Software, allocator: std.mem.Allocator) !Attribute {
+        pub fn toAttribute(self: Software, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
             return Attribute{ .type = Type.software, .data = try allocator.dupe(u8, self.value) };
         }
     };
@@ -592,7 +592,7 @@ pub const common = struct {
         family: AddressFamily,
         port: u16,
 
-        pub fn fromAttribute(attribute: Attribute) !AlternateServer {
+        pub fn fromAttribute(attribute: Attribute) ConversionError!AlternateServer {
             if (attribute.type != Type.alternate_server) return error.InvalidAttribute;
 
             var stream = std.io.fixedBufferStream(attribute.data);
@@ -613,7 +613,7 @@ pub const common = struct {
             }
         }
 
-        pub fn toAttribute(self: AlternateServer, allocator: std.mem.Allocator) !Attribute {
+        pub fn toAttribute(self: AlternateServer, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
             const data_size = 4 + @as(usize, switch (self.family) {
                 .ipv4 => 4,
                 .ipv6 => 16,
@@ -638,13 +638,13 @@ pub const common = struct {
     pub const AlternateDomain = struct {
         value: []const u8,
 
-        pub fn fromAttribute(attribute: Attribute) !AlternateDomain {
+        pub fn fromAttribute(attribute: Attribute) ConversionError!AlternateDomain {
             if (attribute.type != Type.alternate_domain) return error.InvalidAttribute;
 
             return AlternateDomain{ .value = attribute.data };
         }
 
-        pub fn toAttribute(self: AlternateDomain, allocator: std.mem.Allocator) !Attribute {
+        pub fn toAttribute(self: AlternateDomain, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
             return Attribute{ .type = Type.alternate_domain, .data = try allocator.dupe(u8, self.value) };
         }
     };

@@ -24,9 +24,7 @@ pub const Error = error{
     MethodNotAllowedForClass,
     InvalidFingerprint,
     UnknownTransaction,
-    UnexpectedError,
-    Discard,
-};
+} || ztun.MessageBuilder.Error || std.mem.Allocator.Error;
 
 options: Options,
 allocator: std.mem.Allocator,
@@ -73,40 +71,20 @@ fn isMethodAllowedForClass(method: ztun.Method, class: ztun.Class) bool {
     };
 }
 
-fn doBasicMessageCheck(message: ztun.Message, allocator: std.mem.Allocator) Error!void {
-    if (!isMethodAllowedForClass(message.type.method, message.type.class)) return error.MethodNotAllowedForClass;
-
-    var fingerprint_opt: ?u32 = null;
-    for (message.attributes) |a, i| {
+/// Checks that the given message bears the correct fingerprint. Returns true if so, false otherwise.
+/// In case of any error, the function returns false.
+fn checkFingerprint(message: ztun.Message, allocator: std.mem.Allocator) bool {
+    var fingerprint = for (message.attributes) |a, i| {
         if (a.type == @as(u16, attr.Type.fingerprint)) {
-            const fingerprint_attribute = attr.common.Fingerprint.fromAttribute(a) catch return error.UnexpectedError;
-            fingerprint_opt = fingerprint_attribute.value;
-            if (i != message.attributes.len - 1) return error.InvalidFingerprint;
+            const fingerprint_attribute = attr.common.Fingerprint.fromAttribute(a) catch return false;
+            if (i != message.attributes.len - 1) return false;
+            break fingerprint_attribute.value;
         }
-    }
+    } else return true;
 
-    if (fingerprint_opt) |fingerprint| {
-        const fingerprint_message = ztun.Message.fromParts(message.type.class, message.type.method, message.transaction_id, message.attributes[0 .. message.attributes.len - 1]);
-        const computed_fingerprint = fingerprint_message.computeFingerprint(allocator) catch return error.UnexpectedError;
-        if (computed_fingerprint != fingerprint) return error.InvalidFingerprint;
-    }
-}
-
-pub fn processMessage(server: Self, message: ztun.Message, source: net.Address, temporary_arena: std.mem.Allocator, allocator: std.mem.Allocator) Error!?ztun.Message {
-    std.log.debug("Basic checks", .{});
-    try doBasicMessageCheck(message, temporary_arena);
-
-    var response: ?ztun.Message = null;
-    switch (message.type.class) {
-        .request => {
-            response = try server.handleRequest(message, source, temporary_arena, allocator);
-        },
-        .indication => try server.handleIndication(message, temporary_arena, allocator),
-        .success_response => try server.handleResponse(message, true, temporary_arena, allocator),
-        .error_response => try server.handleResponse(message, false, temporary_arena, allocator),
-    }
-
-    return response;
+    const fingerprint_message = ztun.Message.fromParts(message.type.class, message.type.method, message.transaction_id, message.attributes[0 .. message.attributes.len - 1]);
+    const computed_fingerprint = fingerprint_message.computeFingerprint(allocator) catch return false;
+    return computed_fingerprint == fingerprint;
 }
 
 fn lookForUnknownAttributes(message: ztun.Message, allocator: std.mem.Allocator) error{OutOfMemory}!?[]u16 {
@@ -120,73 +98,13 @@ fn lookForUnknownAttributes(message: ztun.Message, allocator: std.mem.Allocator)
     return if (comprehension_required_unknown_attributes.items.len == 0) null else comprehension_required_unknown_attributes.toOwnedSlice();
 }
 
-const MessageIntegrityDetails = struct {
-    attribute_index: ?usize = null,
-    attribute_index_sha256: ?usize = null,
-    username_attribute: ?attr.common.Username = null,
-
-    pub inline fn isValid(self: MessageIntegrityDetails) bool {
-        return (self.attribute_index != null or self.attribute_index_sha256 != null) and self.username_attribute != null;
-    }
-};
-
-fn getMessageIntegrityDetails(message: ztun.Message) !MessageIntegrityDetails {
-    var details = MessageIntegrityDetails{};
-
-    for (message.attributes) |a, i| switch (a.type) {
-        @as(u16, attr.Type.message_integrity) => details.attribute_index = i,
-        @as(u16, attr.Type.message_integrity_sha256) => details.attribute_index_sha256 = i,
-        @as(u16, attr.Type.username) => details.username_attribute = try attr.common.Username.fromAttribute(a),
-        else => {},
-    };
-
-    return details;
-}
-
-fn authenticateUser(server: Self, username: []const u8) ?ztun.auth.Authentication {
-    if (!std.mem.eql(u8, username, "anon")) return null;
-    // TODO(Corentin): implement checking
-    const password = "password";
-    return switch (server.options.authentication_type) {
-        .short_term => ztun.auth.Authentication{ .short_term = ztun.auth.ShortTermAuthentication{ .password = password } },
-        .long_term => ztun.auth.Authentication{ .long_term = ztun.auth.LongTermAuthentication{ .username = username, .password = password, .realm = "realm" } },
-        else => unreachable,
-    };
-}
-
-fn checkMessageIntegrity(details: MessageIntegrityDetails, authentication_details: AuthenticationDetails, message: ztun.Message, temporary_arena: std.mem.Allocator, allocator: std.mem.Allocator) !?ztun.Message {
-    var storage: [32]u8 = undefined;
-
-    const key = authentication_details.authentication.computeKeyAlloc(temporary_arena) catch return error.UnexpectedError;
-    defer key.deinit(temporary_arena);
-
-    if (details.attribute_index_sha256) |index| {
-        const computed_message_integrity = try ztun.Message.fromParts(message.type.class, message.type.method, message.transaction_id, message.attributes[0..index])
-            .computeMessageIntegritySha256(temporary_arena, &storage, key.value);
-        const message_integrity_sha256_attribute = try attr.common.MessageIntegritySha256.fromAttribute(message.attributes[index]);
-        const length = message_integrity_sha256_attribute.length;
-        const message_integrity = message_integrity_sha256_attribute.storage[0..length];
-
-        if (!std.mem.eql(u8, message_integrity, computed_message_integrity)) return try makeUnauthenticatedMessage(message, "Invalid Message Integrity SHA256", allocator);
-    } else if (details.attribute_index) |index| {
-        const computed_message_integrity = try ztun.Message.fromParts(message.type.class, message.type.method, message.transaction_id, message.attributes[0..index])
-            .computeMessageIntegrity(temporary_arena, storage[0..20], key.value);
-        const message_integrity_attribute = try attr.common.MessageIntegrity.fromAttribute(message.attributes[index]);
-        const message_integrity = message_integrity_attribute.value[0..20];
-
-        if (!std.mem.eql(u8, message_integrity, computed_message_integrity)) return try makeUnauthenticatedMessage(message, "Invalid Message Integrity", allocator);
-    } else unreachable;
-
-    return null;
-}
-
-fn makeBadRequestMessage(request: ztun.Message, allocator: std.mem.Allocator) !ztun.Message {
+fn makeBadRequestMessage(request: ztun.Message, allocator: std.mem.Allocator) ztun.MessageBuilder.Error!ztun.Message {
     var message_builder = ztun.MessageBuilder.init(allocator);
     defer message_builder.deinit();
 
     message_builder.setHeader(request.type.method, .error_response, request.transaction_id);
 
-    const error_code_attribute = try (attr.common.ErrorCode{ .value = .unknown_attribute, .reason = "Bad Request" }).toAttribute(allocator);
+    const error_code_attribute = try (attr.common.ErrorCode{ .value = .bad_request, .reason = "Bad Request" }).toAttribute(allocator);
     try message_builder.addAttribute(error_code_attribute);
 
     const software_attribute = try software_version_attribute.toAttribute(allocator);
@@ -196,13 +114,13 @@ fn makeBadRequestMessage(request: ztun.Message, allocator: std.mem.Allocator) !z
     return try message_builder.build();
 }
 
-fn makeUnauthenticatedMessage(request: ztun.Message, reason: []const u8, allocator: std.mem.Allocator) !ztun.Message {
+fn makeUnauthenticatedMessage(request: ztun.Message, reason: []const u8, allocator: std.mem.Allocator) ztun.MessageBuilder.Error!ztun.Message {
     var message_builder = ztun.MessageBuilder.init(allocator);
     defer message_builder.deinit();
 
     message_builder.setHeader(request.type.method, .error_response, request.transaction_id);
 
-    const error_code_attribute = try (attr.common.ErrorCode{ .value = .unknown_attribute, .reason = reason }).toAttribute(allocator);
+    const error_code_attribute = try (attr.common.ErrorCode{ .value = .unauthenticated, .reason = reason }).toAttribute(allocator);
     try message_builder.addAttribute(error_code_attribute);
 
     const software_attribute = try software_version_attribute.toAttribute(allocator);
@@ -212,7 +130,7 @@ fn makeUnauthenticatedMessage(request: ztun.Message, reason: []const u8, allocat
     return try message_builder.build();
 }
 
-fn makeUnknownAttributesMessage(request: ztun.Message, unknown_attributes: []u16, allocator: std.mem.Allocator) !ztun.Message {
+fn makeUnknownAttributesMessage(request: ztun.Message, unknown_attributes: []u16, allocator: std.mem.Allocator) ztun.MessageBuilder.Error!ztun.Message {
     var message_builder = ztun.MessageBuilder.init(allocator);
     defer message_builder.deinit();
 
@@ -233,61 +151,131 @@ fn makeUnknownAttributesMessage(request: ztun.Message, unknown_attributes: []u16
     return try message_builder.build();
 }
 
-const AuthenticationDetails = struct {
-    authentication: ztun.auth.Authentication,
-    has_message_integrity_sha256: bool = false,
-    has_message_integrity: bool = false,
+const Authentication = union(AuthenticationType) {
+    none: void,
+    short_term: ztun.auth.ShortTermAuthentication,
+    long_term: ztun.auth.LongTermAuthentication,
+
+    pub fn toAuthentication(self: Authentication) !ztun.auth.Authentication {
+        return switch (self) {
+            .none => error.InvalidAuthentication,
+            .short_term => |short_term| ztun.auth.Authentication{ .short_term = short_term },
+            .long_term => |long_term| ztun.auth.Authentication{ .long_term = long_term },
+        };
+    }
 };
 
 const AuthenticationResult = union(enum) {
-    failure: ztun.Message,
-    success: AuthenticationDetails,
+    discard: void,
+    authentication: Authentication,
+    response: ztun.Message,
 };
 
-fn checkAuthentication(server: Self, message: ztun.Message, temporary_arena: std.mem.Allocator, allocator: std.mem.Allocator) Error!AuthenticationResult {
-    var authentication_details = AuthenticationDetails{ .authentication = undefined };
-    if (server.options.authentication_type == .none) return AuthenticationResult{ .success = authentication_details };
+const AuthenticationResultType = std.meta.Tag(AuthenticationResult);
 
-    // First check of Section 9.1.3
-    std.log.debug("Getting message integrity details", .{});
-    const message_integrity_details = getMessageIntegrityDetails(message) catch return error.UnexpectedError;
-    if (!message_integrity_details.isValid()) {
-        const response = makeBadRequestMessage(message, allocator) catch return error.UnexpectedError;
-        return AuthenticationResult{ .failure = response };
-    } else {
-        authentication_details.has_message_integrity_sha256 = message_integrity_details.attribute_index_sha256 != null;
-        authentication_details.has_message_integrity = message_integrity_details.attribute_index != null;
+const MessageIntegrityDetails = struct {
+    username_index: ?usize = null,
+    simple_index: ?usize = null,
+    sha256_index: ?usize = null,
+
+    pub inline fn isValid(self: MessageIntegrityDetails) bool {
+        return (self.simple_index != null or self.sha256_index != null) and self.username_index != null;
     }
 
-    std.log.debug("Authenticate user", .{});
-    // Second check of Section 9.1.3
-    authentication_details.authentication = server.authenticateUser(message_integrity_details.username_attribute.?.value) orelse {
-        const response = makeUnauthenticatedMessage(message, "Invalid username", allocator) catch return error.UnexpectedError;
-        return AuthenticationResult{ .failure = response };
-    };
-
-    std.log.debug("Check message Integrity", .{});
-    // Third check of Section 9.1.3
-    if (checkMessageIntegrity(message_integrity_details, authentication_details, message, temporary_arena, allocator) catch return error.UnexpectedError) |response| {
-        return AuthenticationResult{ .failure = response };
+    pub fn fromAttributes(attributes: []const ztun.Attribute) MessageIntegrityDetails {
+        var details = MessageIntegrityDetails{};
+        for (attributes) |attribute, i| {
+            switch (attribute.type) {
+                @as(u16, ztun.attr.Type.message_integrity) => details.simple_index = i,
+                @as(u16, ztun.attr.Type.message_integrity_sha256) => details.sha256_index = i,
+                @as(u16, ztun.attr.Type.username) => details.username_index = i,
+                else => {},
+            }
+        }
+        return details;
     }
+};
 
-    return AuthenticationResult{ .success = authentication_details };
+fn checkMessageIntegrity(message: ztun.Message, message_integrity_details: MessageIntegrityDetails, authentication: ztun.auth.Authentication, allocator: std.mem.Allocator) !bool {
+    const key = try authentication.computeKeyAlloc(allocator);
+    defer allocator.free(key);
+
+    if (message_integrity_details.sha256_index) |index| {
+        const computed_message_integrity = try ztun.Message.fromParts(message.type.class, message.type.method, message.transaction_id, message.attributes[0..index])
+            .computeMessageIntegritySha256(allocator, key);
+        const message_integrity_sha256_attribute = try attr.common.MessageIntegritySha256.fromAttribute(message.attributes[index]);
+        const length = message_integrity_sha256_attribute.length;
+        const message_integrity = message_integrity_sha256_attribute.storage[0..length];
+        return std.mem.eql(u8, message_integrity, computed_message_integrity);
+    } else if (message_integrity_details.simple_index) |index| {
+        const computed_message_integrity = try ztun.Message.fromParts(message.type.class, message.type.method, message.transaction_id, message.attributes[0..index])
+            .computeMessageIntegrity(allocator, key);
+        const message_integrity_attribute = try attr.common.MessageIntegrity.fromAttribute(message.attributes[index]);
+        const message_integrity = message_integrity_attribute.value[0..20];
+        return std.mem.eql(u8, message_integrity, computed_message_integrity);
+    } else unreachable;
 }
 
-pub fn handleRequest(server: Self, message: ztun.Message, source: net.Address, temporary_arena: std.mem.Allocator, allocator: std.mem.Allocator) Error!ztun.Message {
-    std.log.debug("Received {s} request from {any}", .{ @tagName(message.type.method), source });
+fn authenticateUser(self: Self, username: []const u8) ?ztun.auth.Authentication {
+    if (!std.mem.eql(u8, username, "anon")) return null;
+    // TODO(Corentin): implement checking
+    const password = "password";
+    return switch (self.options.authentication_type) {
+        .short_term => ztun.auth.Authentication{ .short_term = ztun.auth.ShortTermAuthentication{ .password = password } },
+        .long_term => ztun.auth.Authentication{ .long_term = ztun.auth.LongTermAuthentication{ .username = username, .password = password, .realm = "realm" } },
+        else => unreachable,
+    };
+}
 
-    // Check Message integrity and return potential error response.
-    const authentication_details: AuthenticationDetails = switch (try server.checkAuthentication(message, temporary_arena, allocator)) {
-        .failure => |response| return response,
-        .success => |details| details,
+fn authenticateShortTerm(self: Self, message: ztun.Message, message_integrity_details: MessageIntegrityDetails, temporary_allocator: std.mem.Allocator, allocator: std.mem.Allocator) !AuthenticationResult {
+    if (!message_integrity_details.isValid()) {
+        return .{ .response = try makeBadRequestMessage(message, allocator) };
+    }
+
+    const authentication = self.authenticateUser(message.attributes[message_integrity_details.username_index.?].data) orelse {
+        if (message.type.class == .indication) {
+            return .{ .discard = {} };
+        } else if (message.type.class == .request) {
+            return .{ .response = try makeUnauthenticatedMessage(message, "Unauthenticated", allocator) };
+        } else unreachable;
     };
 
-    const unknown_attributes_opt = lookForUnknownAttributes(message, temporary_arena) catch return error.UnexpectedError;
+    if (!try checkMessageIntegrity(message, message_integrity_details, authentication, temporary_allocator)) {
+        if (message.type.class == .indication) {
+            return .{ .discard = {} };
+        } else if (message.type.class == .request) {
+            return .{ .response = try makeUnauthenticatedMessage(message, "Unauthenticated", allocator) };
+        }
+    }
+
+    return .{ .authentication = Authentication{ .short_term = authentication.short_term } };
+}
+
+fn authenticateLongTerm(self: Self, message: ztun.Message, message_integrity_details: MessageIntegrityDetails, temporary_allocator: std.mem.Allocator, allocator: std.mem.Allocator) !AuthenticationResult {
+    _ = message_integrity_details;
+    _ = allocator;
+    _ = temporary_allocator;
+    _ = message;
+    _ = self;
+    @panic("Long-Term authentication is not implemented.");
+}
+
+fn authenticate(self: Self, message: ztun.Message, message_integrity_details: MessageIntegrityDetails, temporary_allocator: std.mem.Allocator, allocator: std.mem.Allocator) !AuthenticationResult {
+    return switch (self.options.authentication_type) {
+        .none => .{ .authentication = .{ .none = {} } },
+        .short_term => self.authenticateShortTerm(message, message_integrity_details, temporary_allocator, allocator),
+        .long_term => self.authenticateLongTerm(message, message_integrity_details, temporary_allocator, allocator),
+    };
+}
+
+pub fn handleRequest(server: Self, message: ztun.Message, source: net.Address, authentication: Authentication, message_integrity_details: MessageIntegrityDetails, temporary_arena: std.mem.Allocator, allocator: std.mem.Allocator) Error!MessageResult {
+    _ = server;
+    std.log.debug("Received {s} request from {any}", .{ @tagName(message.type.method), source });
+
+    const unknown_attributes_opt = try lookForUnknownAttributes(message, temporary_arena);
     if (unknown_attributes_opt) |unknown_attributes| {
         defer temporary_arena.free(unknown_attributes);
-        return makeUnknownAttributesMessage(message, unknown_attributes, allocator) catch return error.UnexpectedError;
+        return .{ .response = try makeUnknownAttributesMessage(message, unknown_attributes, allocator) };
     }
 
     var message_builder = ztun.MessageBuilder.init(allocator);
@@ -301,7 +289,7 @@ pub fn handleRequest(server: Self, message: ztun.Message, source: net.Address, t
                 .port = ipv4.port,
                 .family = attr.common.AddressFamily{ .ipv4 = ipv4.value },
             }, message.transaction_id);
-            break :blk xor_mapped_address_attribute.toAttribute(allocator) catch return error.UnexpectedError;
+            break :blk try xor_mapped_address_attribute.toAttribute(allocator);
         },
 
         .ipv6 => |ipv6| blk: {
@@ -309,99 +297,93 @@ pub fn handleRequest(server: Self, message: ztun.Message, source: net.Address, t
                 .port = ipv6.port,
                 .family = attr.common.AddressFamily{ .ipv6 = ipv6.value },
             }, message.transaction_id);
-            break :blk xor_mapped_address_attribute.toAttribute(allocator) catch return error.UnexpectedError;
+            break :blk try xor_mapped_address_attribute.toAttribute(allocator);
         },
     };
     errdefer allocator.free(xor_mapped_address_attribute.data);
-    message_builder.addAttribute(xor_mapped_address_attribute) catch return error.UnexpectedError;
+    try message_builder.addAttribute(xor_mapped_address_attribute);
 
-    const software_attribute = software_version_attribute.toAttribute(allocator) catch return error.UnexpectedError;
+    const software_attribute = try software_version_attribute.toAttribute(allocator);
     errdefer allocator.free(software_attribute.data);
-    message_builder.addAttribute(software_attribute) catch return error.UnexpectedError;
+    try message_builder.addAttribute(software_attribute);
 
-    if (authentication_details.has_message_integrity_sha256) {
-        message_builder.addMessageIntegritySha256(authentication_details.authentication);
-    } else if (authentication_details.has_message_integrity) {
-        message_builder.addMessageIntegrity(authentication_details.authentication);
+    if (authentication != .none) {
+        const real_authentication = authentication.toAuthentication() catch unreachable;
+        if (message_integrity_details.sha256_index != null) {
+            message_builder.addMessageIntegritySha256(real_authentication);
+        } else if (message_integrity_details.simple_index != null) {
+            message_builder.addMessageIntegrity(real_authentication);
+        } else unreachable;
     }
 
     message_builder.addFingerprint();
-    return message_builder.build() catch return error.UnexpectedError;
+    return .{ .response = try message_builder.build() };
 }
 
-pub fn handleIndication(server: Self, message: ztun.Message, temporary_arena: std.mem.Allocator, allocator: std.mem.Allocator) Error!void {
+pub fn handleIndication(server: Self, message: ztun.Message, authentication: Authentication, temporary_arena: std.mem.Allocator, allocator: std.mem.Allocator) Error!MessageResult {
+    _ = authentication;
     _ = temporary_arena;
     _ = message;
     _ = allocator;
     _ = server;
+    @panic("Indication handling is not implemented");
 }
 
-pub fn handleResponse(server: Self, message: ztun.Message, success: bool, temporary_arena: std.mem.Allocator, allocator: std.mem.Allocator) Error!void {
+pub fn handleResponse(server: Self, message: ztun.Message, success: bool, authentication: Authentication, temporary_arena: std.mem.Allocator, allocator: std.mem.Allocator) Error!MessageResult {
+    _ = authentication;
     _ = temporary_arena;
     _ = message;
     _ = server;
     _ = allocator;
     _ = success;
+    @panic("Response handling is not implemented");
 }
-
-pub const SafeStringFormatter = struct {
-    source: []const u8,
-
-    pub fn format(self: SafeStringFormatter, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
-        _ = options;
-        _ = fmt;
-        for (self.source) |c| {
-            if (std.ascii.isPrint(c)) {
-                try writer.writeByte(c);
-            } else {
-                try writer.print("\\x{x:0>2}", .{c});
-            }
-        }
-    }
+/// Represents the type of result that can be returned by the server when handling a message.
+pub const MessageResultType = enum {
+    discard,
+    ok,
+    response,
 };
 
-pub fn safeStringFormatter(source: []const u8) SafeStringFormatter {
-    return SafeStringFormatter{ .source = source };
-}
+/// Represents the result returned by the server when handling a message.
+pub const MessageResult = union(MessageResultType) {
+    /// The message should be discarded.
+    discard: void,
+    /// The message has been handled correctly, but doesn't require any response to be send back.
+    ok: void,
+    /// The message has been handled correctly and this contains the response to send back.
+    response: ztun.Message,
+};
 
-pub fn processRawMessage(self: Self, bytes: []const u8, source: net.Address, allocator: std.mem.Allocator) ?[]const u8 {
-    var arena_storage = self.allocator.alloc(u8, 4096) catch |err| {
-        std.log.err("{any}", .{err});
-        return null;
+/// Handles a message sent to the server and returns a `MessageResult` result or an error in case of critical failure.
+pub fn handleMessage(self: Self, message: ztun.Message, source: net.Address, allocator: std.mem.Allocator) !MessageResult {
+    var temp_arena_state = std.heap.ArenaAllocator.init(self.allocator);
+    defer temp_arena_state.deinit();
+
+    // NOTE(Corendos): If the message has been successfully decoded, some basic checks already have been done.
+
+    // Check that the method is allowed for the given class. If not, discard message as described in Section 6.3.
+    if (!isMethodAllowedForClass(message.type.method, message.type.class)) return .{ .discard = {} };
+
+    // Check the fingerprint if it's present
+    if (!checkFingerprint(message, temp_arena_state.allocator())) return .{ .discard = {} };
+
+    const message_integrity_details = MessageIntegrityDetails.fromAttributes(message.attributes);
+
+    // Check authentication
+    const authentication_result = self.authenticate(message, message_integrity_details, temp_arena_state.allocator(), allocator) catch return .{ .discard = {} };
+    const authentication = switch (authentication_result) {
+        .discard => return .{ .discard = {} },
+        .response => |response| return .{ .response = response },
+        .authentication => |authentication| authentication,
     };
-    defer self.allocator.free(arena_storage);
 
-    var arena_state = std.heap.FixedBufferAllocator.init(arena_storage);
-
-    var input_stream = std.io.fixedBufferStream(bytes);
-    std.log.debug("Reading message", .{});
-    const message = ztun.Message.readAlloc(input_stream.reader(), arena_state.allocator()) catch |err| {
-        std.log.err("{any}", .{err});
-        return null;
+    return switch (message.type.class) {
+        .request => try self.handleRequest(message, source, authentication, message_integrity_details, temp_arena_state.allocator(), allocator),
+        .indication => try self.handleIndication(message, authentication, temp_arena_state.allocator(), allocator),
+        .success_response => try self.handleResponse(message, true, authentication, temp_arena_state.allocator(), allocator),
+        .error_response => try self.handleResponse(message, false, authentication, temp_arena_state.allocator(), allocator),
     };
-    defer message.deinit(arena_state.allocator());
-
-    std.log.debug("Processing message", .{});
-    const response_opt = self.processMessage(message, source, arena_state.allocator(), allocator) catch |err| {
-        std.log.err("{any}", .{err});
-        return null;
-    };
-    if (response_opt) |response| {
-        defer response.deinit(allocator);
-        var output_buffer = allocator.alloc(u8, response.length + ztun.constants.message_header_length) catch |err| {
-            std.log.err("{any}", .{err});
-            return null;
-        };
-        errdefer allocator.free(output_buffer);
-
-        var output_stream = std.io.fixedBufferStream(output_buffer);
-        response.write(output_stream.writer()) catch |err| {
-            std.log.err("{any}", .{err});
-            return null;
-        };
-        return output_stream.getWritten();
-    }
-    return null;
 }
 
 test "check fingerprint while processing a message" {
@@ -430,5 +412,5 @@ test "check fingerprint while processing a message" {
         .length = message.length,
         .attributes = &.{wrong_fingerprint_attribute},
     };
-    try std.testing.expectError(error.InvalidFingerprint, server.processMessage(wrong_message, undefined, std.testing.allocator, std.testing.allocator));
+    try std.testing.expectEqual(MessageResultType.discard, try server.handleMessage(wrong_message, undefined, std.testing.allocator));
 }
