@@ -20,6 +20,29 @@ pub fn createAndBindSockets() ![2]i32 {
     return .{ ipv4_socket, ipv6_socket };
 }
 
+pub fn handleMessage(fd: i32, server: *ztun.Server, buffer: []u8, allocator: std.mem.Allocator) !void {
+    // Receive the message in the previously allocated buffer.
+    const raw_message = try utils.receiveFrom(fd, buffer);
+
+    const message = blk: {
+        var stream = std.io.fixedBufferStream(raw_message.data);
+        break :blk try ztun.Message.readAlloc(stream.reader(), allocator);
+    };
+    defer message.deinit(allocator);
+
+    const message_result = try server.handleMessage(message, raw_message.source, allocator);
+    // Process the message and return the response if there is one to send.
+    switch (message_result) {
+        .ok => {},
+        .discard => {},
+        .response => |response| {
+            var stream = std.io.fixedBufferStream(buffer);
+            try response.write(stream.writer());
+            try utils.sendTo(fd, stream.getWritten(), raw_message.source);
+        },
+    }
+}
+
 pub fn main() anyerror!void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -32,8 +55,8 @@ pub fn main() anyerror!void {
     const sockets = try createAndBindSockets();
 
     // Allocate the buffer used to receive the requests.
-    var receive_buffer = try gpa.allocator().alloc(u8, 4096);
-    defer gpa.allocator().free(receive_buffer);
+    var buffer = try gpa.allocator().alloc(u8, 4096);
+    defer gpa.allocator().free(buffer);
 
     // Allocate the buffer that will be used as temporary memory for the answer.
     var arena_storage = try gpa.allocator().alloc(u8, 4096);
@@ -59,41 +82,10 @@ pub fn main() anyerror!void {
 
         for (fds) |*entry| {
             if (entry.revents & linux.POLL.IN > 0) {
-                // Receive the message in the previously allocated buffer.
-                const raw_message = utils.receiveFrom(entry.fd, receive_buffer) catch |err| {
-                    std.log.err("{}", .{err});
+                handleMessage(entry.fd, &server, buffer, arena_state.allocator()) catch |err| {
+                    std.log.err("Unexpected error: {}", .{err});
                     continue;
                 };
-
-                const message = blk: {
-                    var stream = std.io.fixedBufferStream(raw_message.data);
-                    break :blk ztun.Message.readAlloc(stream.reader(), arena_state.allocator()) catch |err| {
-                        std.log.err("{}", .{err});
-                        continue;
-                    };
-                };
-
-                const message_result = server.handleMessage(message, raw_message.source, arena_state.allocator()) catch |err| {
-                    std.log.err("{}", .{err});
-                    continue;
-                };
-                // Process the message and return the response if there is one to send.
-                switch (message_result) {
-                    .ok => {},
-                    .discard => {},
-                    .response => |response| {
-                        var buffer = arena_state.allocator().alloc(u8, 2048) catch |err| {
-                            std.log.err("{}", .{err});
-                            continue;
-                        };
-                        var stream = std.io.fixedBufferStream(buffer);
-                        response.write(stream.writer()) catch |err| {
-                            std.log.err("{}", .{err});
-                            continue;
-                        };
-                        try utils.sendTo(entry.fd, stream.getWritten(), raw_message.source);
-                    },
-                }
             }
         }
     }
