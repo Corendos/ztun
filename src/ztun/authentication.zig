@@ -23,7 +23,7 @@ pub const ShortTermAuthentication = struct {
         var buffer = try allocator.alloc(u8, self.password.len * 2);
         errdefer allocator.free(buffer);
         const bytes_written = try self.computeKey(buffer);
-        return allocator.shrink(buffer, bytes_written);
+        return try allocator.realloc(buffer, bytes_written);
     }
 };
 

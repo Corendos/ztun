@@ -3,8 +3,12 @@
 *Disclaimer:* This is still a work in progress !
 
 ## Table Of Contents
+- [Supported zig version](#supported-zig-version)
 - [Features](#features)
 - [License](#license)
+
+## Supported zig version
+`0.11.0-dev.1420+3cb1ab0e0`
 
 ## Features
 

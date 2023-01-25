@@ -250,7 +250,7 @@ pub const Message = struct {
             .type = message_type,
             .transaction_id = transaction_id,
             .length = message_length,
-            .attributes = attribute_list.toOwnedSlice(),
+            .attributes = try attribute_list.toOwnedSlice(),
         };
     }
 };
@@ -408,7 +408,7 @@ pub const MessageBuilder = struct {
             try self.attribute_list.append(attribute);
         }
 
-        return Message.fromParts(self.class.?, self.method.?, self.transaction_id.?, self.attribute_list.toOwnedSlice());
+        return Message.fromParts(self.class.?, self.method.?, self.transaction_id.?, try self.attribute_list.toOwnedSlice());
     }
 };
 

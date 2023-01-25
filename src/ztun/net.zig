@@ -99,11 +99,15 @@ pub const Ipv6Address = struct {
             if (scope_id) {
                 if (c >= '0' and c <= '9') {
                     const digit = c - '0';
-                    if (@mulWithOverflow(u32, result.scope_id, 10, &result.scope_id)) {
-                        return error.Overflow;
+                    {
+                        const ov = @mulWithOverflow(result.scope_id, 10);
+                        if (ov[1] != 0) return error.Overflow;
+                        result.scope_id = ov[0];
                     }
-                    if (@addWithOverflow(u32, result.scope_id, digit, &result.scope_id)) {
-                        return error.Overflow;
+                    {
+                        const ov = @addWithOverflow(result.scope_id, digit);
+                        if (ov[1] != 0) return error.Overflow;
+                        result.scope_id = ov[0];
                     }
                 } else {
                     return error.InvalidCharacter;
@@ -139,9 +143,9 @@ pub const Ipv6Address = struct {
                     return error.InvalidIpv4Mapping;
                 }
                 const start_index = std.mem.lastIndexOfScalar(u8, buf[0..i], ':').? + 1;
-                const addr = std.mem.nativeToBig(u32, (Ipv4Address.parse(buf[start_index..], 0) catch {
+                const addr = (Ipv4Address.parse(buf[start_index..], 0) catch {
                     return error.InvalidIpv4Mapping;
-                }).value);
+                }).value;
                 ip_slice = output[0..];
                 ip_slice[10] = 0xff;
                 ip_slice[11] = 0xff;
@@ -155,11 +159,15 @@ pub const Ipv6Address = struct {
                 return result;
             } else {
                 const digit = try std.fmt.charToDigit(c, 16);
-                if (@mulWithOverflow(u16, x, 16, &x)) {
-                    return error.Overflow;
+                {
+                    const ov = @mulWithOverflow(x, 16);
+                    if (ov[1] != 0) return error.Overflow;
+                    x = ov[0];
                 }
-                if (@addWithOverflow(u16, x, digit, &x)) {
-                    return error.Overflow;
+                {
+                    const ov = @addWithOverflow(x, digit);
+                    if (ov[1] != 0) return error.Overflow;
+                    x = ov[0];
                 }
                 saw_any_digits = true;
             }

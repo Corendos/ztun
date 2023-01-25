@@ -109,7 +109,7 @@ fn lookForUnknownAttributes(message: ztun.Message, allocator: std.mem.Allocator)
         comprehension_required_unknown_attributes.appendAssumeCapacity(a.type);
     };
 
-    return if (comprehension_required_unknown_attributes.items.len == 0) null else comprehension_required_unknown_attributes.toOwnedSlice();
+    return if (comprehension_required_unknown_attributes.items.len == 0) null else try comprehension_required_unknown_attributes.toOwnedSlice();
 }
 
 /// Returns a STUN message representing a Bad Request response_error.
