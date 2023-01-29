@@ -95,6 +95,14 @@ test "integer to message type" {
     }
 }
 
+/// Represents the type of message integrity to use.
+pub const MessageIntegrityType = enum {
+    /// Classical MESSAGE-INTEGRITY attribute.
+    classic,
+    /// MESSAGE-INTEGRITY-SHA256 attribute.
+    sha256,
+};
+
 pub const DeserializationError = error{
     EndOfStream,
     NonZeroStartingBits,
@@ -269,6 +277,26 @@ pub const Message = struct {
         const fingerprint_message = Self.fromParts(self.type.class, self.type.method, self.transaction_id, self.attributes[0 .. self.attributes.len - 1]);
         const computed_fingerprint = fingerprint_message.computeFingerprint(allocator) catch return false;
         return computed_fingerprint == fingerprint;
+    }
+
+    /// Checks that the message integrity stored in a STUN message is valid using the authentication parameters of a user. Returns true if the message integrity is correct, false otherwise.
+    pub fn checkMessageIntegrity(message: Message, @"type": MessageIntegrityType, attribute_index: usize, key: []const u8, allocator: std.mem.Allocator) !bool {
+        const truncated_message = Message.fromParts(message.type.class, message.type.method, message.transaction_id, message.attributes[0..attribute_index]);
+        return switch (@"type") {
+            .classic => r: {
+                const computed_message_integrity = try truncated_message.computeMessageIntegrity(allocator, key);
+                const message_integrity_attribute = try attr.common.MessageIntegrity.fromAttribute(message.attributes[attribute_index]);
+                const message_integrity = message_integrity_attribute.value[0..20];
+                break :r std.mem.eql(u8, message_integrity, computed_message_integrity);
+            },
+            .sha256 => r: {
+                const computed_message_integrity = try truncated_message.computeMessageIntegritySha256(allocator, key);
+                const message_integrity_sha256_attribute = try attr.common.MessageIntegritySha256.fromAttribute(message.attributes[attribute_index]);
+                const length = message_integrity_sha256_attribute.length;
+                const stored_message_integrity = message_integrity_sha256_attribute.storage[0..length];
+                break :r std.mem.eql(u8, stored_message_integrity, computed_message_integrity);
+            },
+        };
     }
 };
 

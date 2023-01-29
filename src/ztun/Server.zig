@@ -178,26 +178,10 @@ const MessageIntegrityDetails = struct {
     }
 };
 
-/// Checks that the message integrity stored in a STUN message is valid using the authentication parameters of a user. Returns true if the message integrity is corrext, false otherwise.
-fn checkMessageIntegrity(message: ztun.Message, message_integrity_details: MessageIntegrityDetails, authentication: ztun.auth.Authentication, allocator: std.mem.Allocator) !bool {
-    const key = try authentication.computeKeyAlloc(allocator);
-    defer allocator.free(key);
-
-    if (message_integrity_details.sha256_index) |index| {
-        const computed_message_integrity = try ztun.Message.fromParts(message.type.class, message.type.method, message.transaction_id, message.attributes[0..index])
-            .computeMessageIntegritySha256(allocator, key);
-        const message_integrity_sha256_attribute = try attr.common.MessageIntegritySha256.fromAttribute(message.attributes[index]);
-        const length = message_integrity_sha256_attribute.length;
-        const message_integrity = message_integrity_sha256_attribute.storage[0..length];
-        return std.mem.eql(u8, message_integrity, computed_message_integrity);
-    } else if (message_integrity_details.simple_index) |index| {
-        const computed_message_integrity = try ztun.Message.fromParts(message.type.class, message.type.method, message.transaction_id, message.attributes[0..index])
-            .computeMessageIntegrity(allocator, key);
-        const message_integrity_attribute = try attr.common.MessageIntegrity.fromAttribute(message.attributes[index]);
-        const message_integrity = message_integrity_attribute.value[0..20];
-        return std.mem.eql(u8, message_integrity, computed_message_integrity);
-    } else unreachable;
-}
+pub const AuthenticationError = error{
+    InvalidMessageIntegrityDetails,
+    InvalidAuthentication,
+} || std.mem.Allocator.Error;
 
 /// Returns the credentials of a given user or null if there is none.
 fn authenticateUser(self: Self, username: []const u8) ?ztun.auth.Authentication {
@@ -212,47 +196,45 @@ fn authenticateUser(self: Self, username: []const u8) ?ztun.auth.Authentication 
 }
 
 /// Authenticates the sender of a STUN message using the short-term mechanism.
-fn authenticateShortTerm(self: Self, message: ztun.Message, message_integrity_details: MessageIntegrityDetails, temporary_allocator: std.mem.Allocator, allocator: std.mem.Allocator) !AuthenticationResult {
-    if (!message_integrity_details.isValid()) {
-        return .{ .response = try makeBadRequestMessage(message, allocator) };
-    }
+fn authenticateShortTerm(message: ztun.Message, message_integrity_type: ztun.MessageIntegrityType, message_integrity_attribute_index: usize, key: []const u8, allocator: std.mem.Allocator) AuthenticationError!bool {
+    std.debug.assert(message.type.class == .request);
 
-    const authentication = self.authenticateUser(message.attributes[message_integrity_details.username_index.?].data) orelse {
-        if (message.type.class == .indication) {
-            return .{ .discard = {} };
-        } else if (message.type.class == .request) {
-            return .{ .response = try makeUnauthenticatedMessage(message, "Unauthenticated", allocator) };
-        } else unreachable;
-    };
-
-    if (!try checkMessageIntegrity(message, message_integrity_details, authentication, temporary_allocator)) {
-        if (message.type.class == .indication) {
-            return .{ .discard = {} };
-        } else if (message.type.class == .request) {
-            return .{ .response = try makeUnauthenticatedMessage(message, "Unauthenticated", allocator) };
-        }
-    }
-
-    return .{ .authentication = authentication };
+    return message.checkMessageIntegrity(message_integrity_type, message_integrity_attribute_index, key, allocator) catch return false;
 }
 
-/// Authenticates the sender of a STUN message using the long-erm mechanism.
-fn authenticateLongTerm(self: Self, message: ztun.Message, message_integrity_details: MessageIntegrityDetails, temporary_allocator: std.mem.Allocator, allocator: std.mem.Allocator) !AuthenticationResult {
-    _ = message_integrity_details;
+/// Authenticates the sender of a STUN message using the long-term mechanism.
+fn authenticateLongTerm(message: ztun.Message, message_integrity_type: ztun.MessageIntegrityType, message_integrity_attribute_index: usize, key: []const u8, allocator: std.mem.Allocator) AuthenticationError!bool {
+    _ = message_integrity_attribute_index;
+    _ = message_integrity_type;
+    _ = key;
     _ = allocator;
-    _ = temporary_allocator;
     _ = message;
-    _ = self;
     @panic("Long-Term authentication is not implemented.");
 }
 
 /// Authenticates the sender of a STUN message using the server configuration.
-fn authenticate(self: Self, message: ztun.Message, message_integrity_details: MessageIntegrityDetails, temporary_allocator: std.mem.Allocator, allocator: std.mem.Allocator) !AuthenticationResult {
-    return switch (self.options.authentication_type) {
-        .none => .{ .authentication = .{ .none = .{} } },
-        .short_term => self.authenticateShortTerm(message, message_integrity_details, temporary_allocator, allocator),
-        .long_term => self.authenticateLongTerm(message, message_integrity_details, temporary_allocator, allocator),
+fn authenticate(self: Self, message: ztun.Message, message_integrity_details: MessageIntegrityDetails, allocator: std.mem.Allocator) AuthenticationError!ztun.auth.Authentication {
+    if (self.options.authentication_type == .none) return .{ .none = .{} };
+
+    if (!message_integrity_details.isValid()) {
+        return error.InvalidMessageIntegrityDetails;
+    }
+    const message_integrity_type: ztun.MessageIntegrityType = if (message_integrity_details.sha256_index != null) .sha256 else .classic;
+    const message_integrity_attribute_index = message_integrity_details.sha256_index orelse message_integrity_details.simple_index orelse unreachable;
+
+    const authentication = self.authenticateUser(message.attributes[message_integrity_details.username_index.?].data) orelse return error.InvalidAuthentication;
+    const key = authentication.computeKeyAlloc(allocator) catch return error.InvalidAuthentication;
+    defer allocator.free(key);
+
+    const success = switch (self.options.authentication_type) {
+        .short_term => try authenticateShortTerm(message, message_integrity_type, message_integrity_attribute_index, key, allocator),
+        .long_term => try authenticateLongTerm(message, message_integrity_type, message_integrity_attribute_index, key, allocator),
+        .none => unreachable,
     };
+
+    if (!success) return error.InvalidAuthentication;
+
+    return authentication;
 }
 
 /// Handles a request after the basic checks and authentication (if needed) has been done.
@@ -361,11 +343,9 @@ pub fn handleMessage(self: Self, message: ztun.Message, source: net.Address, all
     const message_integrity_details = MessageIntegrityDetails.fromAttributes(message.attributes);
 
     // Check authentication
-    const authentication_result = self.authenticate(message, message_integrity_details, temp_arena_state.allocator(), allocator) catch return .{ .discard = {} };
-    const authentication = switch (authentication_result) {
-        .discard => return .{ .discard = {} },
-        .response => |response| return .{ .response = response },
-        .authentication => |authentication| authentication,
+    const authentication = self.authenticate(message, message_integrity_details, temp_arena_state.allocator()) catch |err| switch (err) {
+        error.InvalidMessageIntegrityDetails, error.InvalidAuthentication => return .{ .response = try makeUnauthenticatedMessage(message, "Unauthenticated", allocator) },
+        error.OutOfMemory => return .{ .discard = {} },
     };
 
     // Handle the message depending on its type.
