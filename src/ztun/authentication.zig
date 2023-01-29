@@ -60,14 +60,31 @@ pub const LongTermAuthentication = struct {
     }
 };
 
+/// Dummy struct to handle the case when there is no authentication
+pub const NoneAuthentication = struct {
+    pub fn computeKey(self: NoneAuthentication, out: []u8) !usize {
+        _ = self;
+        _ = out;
+        return 0;
+    }
+
+    pub fn computeKeyAlloc(self: NoneAuthentication, allocator: std.mem.Allocator) ![]u8 {
+        _ = self;
+        _ = allocator;
+        return &[_]u8{};
+    }
+};
+
 /// Represents the type of authentication.
 pub const AuthenticationType = enum {
+    none,
     short_term,
     long_term,
 };
 
 /// Represents an authentication mechanism.
 pub const Authentication = union(AuthenticationType) {
+    none: NoneAuthentication,
     short_term: ShortTermAuthentication,
     long_term: LongTermAuthentication,
 

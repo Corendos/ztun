@@ -10,20 +10,10 @@ const ztun = @import("../ztun.zig");
 
 const software_version_attribute = attr.common.Software{ .value = std.fmt.comptimePrint("ztun v{}", .{@import("constants.zig").version}) };
 
-/// Authentication used by the server.
-pub const AuthenticationType = enum {
-    /// No authentication.
-    none,
-    /// Short-term authentication.
-    short_term,
-    /// Long-term authentication.
-    long_term,
-};
-
 /// Options to configure the STUN server.
 pub const Options = struct {
     /// Type of authentication to use.
-    authentication_type: AuthenticationType = .none,
+    authentication_type: ztun.auth.AuthenticationType = .none,
 };
 
 /// Server related error.
@@ -72,32 +62,6 @@ fn isUnknownAttribute(value: u16) bool {
         @as(u16, attr.Type.alternate_domain) => false,
         else => true,
     };
-}
-
-/// Returns true if the method is a valid method for the given class.
-fn isMethodAllowedForClass(method: ztun.Method, class: ztun.Class) bool {
-    return switch (class) {
-        .request => method == .binding,
-        .indication => method == .binding,
-        .success_response => method == .binding,
-        .error_response => method == .binding,
-    };
-}
-
-/// Checks that the given message bears the correct fingerprint. Returns true if so, false otherwise.
-/// In case of any error, the function returns false.
-fn checkFingerprint(message: ztun.Message, allocator: std.mem.Allocator) bool {
-    var fingerprint = for (message.attributes) |a, i| {
-        if (a.type == @as(u16, attr.Type.fingerprint)) {
-            const fingerprint_attribute = attr.common.Fingerprint.fromAttribute(a) catch return false;
-            if (i != message.attributes.len - 1) return false;
-            break fingerprint_attribute.value;
-        }
-    } else return true;
-
-    const fingerprint_message = ztun.Message.fromParts(message.type.class, message.type.method, message.transaction_id, message.attributes[0 .. message.attributes.len - 1]);
-    const computed_fingerprint = fingerprint_message.computeFingerprint(allocator) catch return false;
-    return computed_fingerprint == fingerprint;
 }
 
 /// Returns the list of unknown attributes or null if they are all known.
@@ -168,38 +132,22 @@ fn makeUnknownAttributesMessage(request: ztun.Message, unknown_attributes: []u16
     return try message_builder.build();
 }
 
-/// Represents the parameters required to compute the authentication-related value.
-const Authentication = union(AuthenticationType) {
-    /// No parameters required when there is no authentication.
-    none: void,
-    /// Short-term authentication paramters.
-    short_term: ztun.auth.ShortTermAuthentication,
-    /// Long-term authentication paramters.
-    long_term: ztun.auth.LongTermAuthentication,
-
-    /// Returns a `ztun.auth.Authentication` struct from the server-specific `Authentication` struct.
-    // TODO(Corendos): Find a better name for that or merge this and `ztun.auth.Authentication`.
-    pub fn toAuthentication(self: Authentication) !ztun.auth.Authentication {
-        return switch (self) {
-            .none => error.InvalidAuthentication,
-            .short_term => |short_term| ztun.auth.Authentication{ .short_term = short_term },
-            .long_term => |long_term| ztun.auth.Authentication{ .long_term = long_term },
-        };
-    }
+/// Type of Authentication result.
+const AuthenticationResultType = enum {
+    discard,
+    authentication,
+    response,
 };
 
 /// Represents the result of an authentication to the server.
-const AuthenticationResult = union(enum) {
+const AuthenticationResult = union(AuthenticationResultType) {
     /// The message should be discarded silently,
     discard: void,
     /// The authentication succeeded and the result contains the parameters.
-    authentication: Authentication,
+    authentication: ztun.auth.Authentication,
     /// The authentication failed and produced a response to send back.
     response: ztun.Message,
 };
-
-/// Type of Authentication result.
-const AuthenticationResultType = std.meta.Tag(AuthenticationResult);
 
 /// Represents some details about the message integrity attributes of a message.
 const MessageIntegrityDetails = struct {
@@ -285,7 +233,7 @@ fn authenticateShortTerm(self: Self, message: ztun.Message, message_integrity_de
         }
     }
 
-    return .{ .authentication = Authentication{ .short_term = authentication.short_term } };
+    return .{ .authentication = authentication };
 }
 
 /// Authenticates the sender of a STUN message using the long-erm mechanism.
@@ -301,14 +249,14 @@ fn authenticateLongTerm(self: Self, message: ztun.Message, message_integrity_det
 /// Authenticates the sender of a STUN message using the server configuration.
 fn authenticate(self: Self, message: ztun.Message, message_integrity_details: MessageIntegrityDetails, temporary_allocator: std.mem.Allocator, allocator: std.mem.Allocator) !AuthenticationResult {
     return switch (self.options.authentication_type) {
-        .none => .{ .authentication = .{ .none = {} } },
+        .none => .{ .authentication = .{ .none = .{} } },
         .short_term => self.authenticateShortTerm(message, message_integrity_details, temporary_allocator, allocator),
         .long_term => self.authenticateLongTerm(message, message_integrity_details, temporary_allocator, allocator),
     };
 }
 
 /// Handles a request after the basic checks and authentication (if needed) has been done.
-pub fn handleRequest(server: Self, message: ztun.Message, source: net.Address, authentication: Authentication, message_integrity_details: MessageIntegrityDetails, temporary_arena: std.mem.Allocator, allocator: std.mem.Allocator) Error!MessageResult {
+pub fn handleRequest(server: Self, message: ztun.Message, source: net.Address, authentication: ztun.auth.Authentication, message_integrity_details: MessageIntegrityDetails, temporary_arena: std.mem.Allocator, allocator: std.mem.Allocator) Error!MessageResult {
     _ = server;
     std.log.debug("Received {s} request from {any}", .{ @tagName(message.type.method), source });
 
@@ -348,11 +296,10 @@ pub fn handleRequest(server: Self, message: ztun.Message, source: net.Address, a
     try message_builder.addAttribute(software_attribute);
 
     if (authentication != .none) {
-        const real_authentication = authentication.toAuthentication() catch unreachable;
         if (message_integrity_details.sha256_index != null) {
-            message_builder.addMessageIntegritySha256(real_authentication);
+            message_builder.addMessageIntegritySha256(authentication);
         } else if (message_integrity_details.simple_index != null) {
-            message_builder.addMessageIntegrity(real_authentication);
+            message_builder.addMessageIntegrity(authentication);
         } else unreachable;
     }
 
@@ -361,7 +308,7 @@ pub fn handleRequest(server: Self, message: ztun.Message, source: net.Address, a
 }
 
 /// Handles an indication after the basic checks and authentication (if needed) has been done.
-pub fn handleIndication(server: Self, message: ztun.Message, authentication: Authentication, temporary_arena: std.mem.Allocator, allocator: std.mem.Allocator) Error!MessageResult {
+pub fn handleIndication(server: Self, message: ztun.Message, authentication: ztun.auth.Authentication, temporary_arena: std.mem.Allocator, allocator: std.mem.Allocator) Error!MessageResult {
     _ = authentication;
     _ = temporary_arena;
     _ = message;
@@ -371,7 +318,7 @@ pub fn handleIndication(server: Self, message: ztun.Message, authentication: Aut
 }
 
 /// Handles a response after the basic checks and authentication (if needed) has been done.
-pub fn handleResponse(server: Self, message: ztun.Message, success: bool, authentication: Authentication, temporary_arena: std.mem.Allocator, allocator: std.mem.Allocator) Error!MessageResult {
+pub fn handleResponse(server: Self, message: ztun.Message, success: bool, authentication: ztun.auth.Authentication, temporary_arena: std.mem.Allocator, allocator: std.mem.Allocator) Error!MessageResult {
     _ = authentication;
     _ = temporary_arena;
     _ = message;
@@ -406,10 +353,10 @@ pub fn handleMessage(self: Self, message: ztun.Message, source: net.Address, all
     // NOTE(Corendos): If the message has been successfully decoded, some basic checks already have been done.
 
     // Check that the method is allowed for the given class. If not, discard message as described in Section 6.3.
-    if (!isMethodAllowedForClass(message.type.method, message.type.class)) return .{ .discard = {} };
+    if (!ztun.isMethodAllowedForClass(message.type.method, message.type.class)) return .{ .discard = {} };
 
     // Check the fingerprint if it's present
-    if (!checkFingerprint(message, temp_arena_state.allocator())) return .{ .discard = {} };
+    if (!message.checkFingerprint(temp_arena_state.allocator())) return .{ .discard = {} };
 
     const message_integrity_details = MessageIntegrityDetails.fromAttributes(message.attributes);
 

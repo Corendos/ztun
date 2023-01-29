@@ -253,6 +253,23 @@ pub const Message = struct {
             .attributes = try attribute_list.toOwnedSlice(),
         };
     }
+
+    /// Checks that the given message bears the correct fingerprint. Returns true if so, false otherwise.
+    /// In case of any error, the function returns false.
+    pub fn checkFingerprint(self: Self, allocator: std.mem.Allocator) bool {
+        var fingerprint = for (self.attributes) |a, i| {
+            if (a.type == @as(u16, attr.Type.fingerprint)) {
+                const fingerprint_attribute = attr.common.Fingerprint.fromAttribute(a) catch return false;
+                // The fingerprint attribute must be the last one.
+                if (i != self.attributes.len - 1) return false;
+                break fingerprint_attribute.value;
+            }
+        } else return true;
+
+        const fingerprint_message = Self.fromParts(self.type.class, self.type.method, self.transaction_id, self.attributes[0 .. self.attributes.len - 1]);
+        const computed_fingerprint = fingerprint_message.computeFingerprint(allocator) catch return false;
+        return computed_fingerprint == fingerprint;
+    }
 };
 
 /// Convenience helper to build a message.
@@ -411,6 +428,16 @@ pub const MessageBuilder = struct {
         return Message.fromParts(self.class.?, self.method.?, self.transaction_id.?, try self.attribute_list.toOwnedSlice());
     }
 };
+
+/// Returns true if the method is a valid method for the given class.
+pub fn isMethodAllowedForClass(method: Method, class: Class) bool {
+    return switch (class) {
+        .request => method == .binding,
+        .indication => method == .binding,
+        .success_response => method == .binding,
+        .error_response => method == .binding,
+    };
+}
 
 test "Message fingeprint" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
