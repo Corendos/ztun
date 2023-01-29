@@ -27,18 +27,33 @@ pub const Error = error{
 options: Options,
 /// Allocator used by the server internally.
 allocator: std.mem.Allocator,
+/// Stores the registered users.
+user_map: std.StringHashMap(ztun.auth.Authentication),
 
 /// Initializes a server using the given allocator and options.
 pub fn init(allocator: std.mem.Allocator, options: Options) Self {
     return Self{
         .options = options,
         .allocator = allocator,
+        .user_map = std.StringHashMap(ztun.auth.Authentication).init(allocator),
     };
 }
 
 /// Deinitializes the server.
 pub fn deinit(self: *Self) void {
-    _ = self;
+    var user_iterator = self.user_map.iterator();
+    while (user_iterator.next()) |entry| switch (entry.value_ptr.*) {
+        .none => {},
+        .short_term => |value| {
+            self.allocator.free(value.password);
+        },
+        .long_term => |value| {
+            self.allocator.free(value.username);
+            self.allocator.free(value.password);
+            self.allocator.free(value.realm);
+        },
+    };
+    self.user_map.deinit();
 }
 
 /// Returns true if the given attribute is not known by the server.
@@ -185,14 +200,8 @@ pub const AuthenticationError = error{
 
 /// Returns the credentials of a given user or null if there is none.
 fn authenticateUser(self: Self, username: []const u8) ?ztun.auth.Authentication {
-    if (!std.mem.eql(u8, username, "anon")) return null;
-    // TODO(Corentin): implement checking
-    const password = "password";
-    return switch (self.options.authentication_type) {
-        .short_term => ztun.auth.Authentication{ .short_term = ztun.auth.ShortTermAuthentication{ .password = password } },
-        .long_term => ztun.auth.Authentication{ .long_term = ztun.auth.LongTermAuthentication{ .username = username, .password = password, .realm = "realm" } },
-        else => unreachable,
-    };
+    const authentication = self.user_map.get(username) orelse return null;
+    return authentication;
 }
 
 /// Authenticates the sender of a STUN message using the short-term mechanism.
@@ -384,4 +393,32 @@ test "check fingerprint while processing a message" {
         .attributes = &.{wrong_fingerprint_attribute},
     };
     try std.testing.expectEqual(MessageResultType.discard, try server.handleMessage(wrong_message, undefined, std.testing.allocator));
+}
+
+pub fn registerUser(self: *Self, username: []const u8, authentication: ztun.auth.Authentication) !void {
+    if (authentication == .none) return;
+
+    const gop = try self.user_map.getOrPut(username);
+    if (gop.found_existing) switch (gop.value_ptr.*) {
+        .none => {},
+        .short_term => |value| {
+            self.allocator.free(value.password);
+        },
+        .long_term => |value| {
+            self.allocator.free(value.username);
+            self.allocator.free(value.password);
+            self.allocator.free(value.realm);
+        },
+    };
+    gop.value_ptr.* = switch (authentication) {
+        .none => @unionInit(ztun.auth.Authentication, "none", .{}),
+        .short_term => |value| @unionInit(ztun.auth.Authentication, "short_term", .{
+            .password = try self.allocator.dupe(u8, value.password),
+        }),
+        .long_term => |value| @unionInit(ztun.auth.Authentication, "long_term", .{
+            .username = try self.allocator.dupe(u8, value.username),
+            .password = try self.allocator.dupe(u8, value.password),
+            .realm = try self.allocator.dupe(u8, value.realm),
+        }),
+    };
 }

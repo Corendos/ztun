@@ -51,6 +51,9 @@ pub fn main() anyerror!void {
     var server = ztun.Server.init(gpa.allocator(), ztun.Server.Options{ .authentication_type = .short_term });
     defer server.deinit();
 
+    // Register user "anon" with password "password".
+    try server.registerUser("anon", .{ .short_term = .{ .password = "password" } });
+
     // Create and bind sockets (IPv4 and IPv6) to localhost.
     const sockets = try createAndBindSockets();
 

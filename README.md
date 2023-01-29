@@ -15,11 +15,11 @@
 * Platform agnostic core
 * Basic implementation of a STUN server
 * Client/Server samples
+* Short term authentication
 
 ## Missing features
 
 * Long term authentication
-* Short term authentication
 
 ## License
 

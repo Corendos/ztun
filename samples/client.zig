@@ -44,7 +44,7 @@ pub fn socketTypeFromAddress(address: ztun.net.Address) utils.SocketType {
     };
 }
 
-pub fn makeRequest(allocator: std.mem.Allocator) !ztun.Message {
+pub fn makeRequest(allocator: std.mem.Allocator, use_authentication: bool) !ztun.Message {
     var message_builder = ztun.MessageBuilder.init(allocator);
     defer message_builder.deinit();
 
@@ -53,16 +53,18 @@ pub fn makeRequest(allocator: std.mem.Allocator) !ztun.Message {
     message_builder.setMethod(ztun.Method.binding);
     message_builder.randomTransactionId();
 
-    // Authentication attributes.
-    const username_attribute = ztun.attr.common.Username{ .value = "anon" };
-    const attribute = try username_attribute.toAttribute(allocator);
-    errdefer allocator.free(attribute.data);
-    try message_builder.addAttribute(attribute);
+    if (use_authentication) {
+        // Authentication attributes.
+        const username_attribute = ztun.attr.common.Username{ .value = "anon" };
+        const attribute = try username_attribute.toAttribute(allocator);
+        errdefer allocator.free(attribute.data);
+        try message_builder.addAttribute(attribute);
 
-    const authentication = ztun.auth.Authentication{ .short_term = ztun.auth.ShortTermAuthentication{ .password = "password" } };
+        const authentication = ztun.auth.Authentication{ .short_term = ztun.auth.ShortTermAuthentication{ .password = "password" } };
 
-    message_builder.addMessageIntegrity(authentication);
-    message_builder.addMessageIntegritySha256(authentication);
+        message_builder.addMessageIntegrity(authentication);
+        message_builder.addMessageIntegritySha256(authentication);
+    }
 
     // Add a fingerprint for validity check.
     message_builder.addFingerprint();
@@ -84,7 +86,7 @@ pub fn main() anyerror!void {
     defer arena_state.allocator().free(buffer);
 
     // Build a request
-    const request_message = try makeRequest(arena_state.allocator());
+    const request_message = try makeRequest(arena_state.allocator(), true);
     defer request_message.deinit(arena_state.allocator());
 
     // Serialize the request.
