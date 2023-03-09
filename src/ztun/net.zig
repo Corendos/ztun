@@ -95,7 +95,7 @@ pub const Ipv6Address = struct {
         var index: u8 = 0;
         var scope_id = false;
         var abbrv = false;
-        for (buf) |c, i| {
+        for (buf, 0..) |c, i| {
             if (scope_id) {
                 if (c >= '0' and c <= '9') {
                     const digit = c - '0';

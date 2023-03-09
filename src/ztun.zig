@@ -265,7 +265,7 @@ pub const Message = struct {
     /// Checks that the given message bears the correct fingerprint. Returns true if so, false otherwise.
     /// In case of any error, the function returns false.
     pub fn checkFingerprint(self: Self, allocator: std.mem.Allocator) bool {
-        var fingerprint = for (self.attributes) |a, i| {
+        var fingerprint = for (self.attributes, 0..) |a, i| {
             if (a.type == @as(u16, attr.Type.fingerprint)) {
                 const fingerprint_attribute = attr.common.Fingerprint.fromAttribute(a) catch return false;
                 // The fingerprint attribute must be the last one.

@@ -3,36 +3,26 @@
 
 const std = @import("std");
 
-pub fn build(b: *std.build.Builder) void {
+pub fn build(b: *std.Build.Builder) void {
     // Standard release options allow the person running `zig build` to select
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
-    const mode = b.standardReleaseOptions();
+    const mode = b.standardOptimizeOption(.{});
     const target = b.standardTargetOptions(.{});
 
-    const lib = b.addStaticLibrary("ztun", "src/ztun.zig");
-    lib.setBuildMode(mode);
-    lib.setTarget(target);
+    const lib = b.addStaticLibrary(.{ .name = "ztun", .root_source_file = std.Build.FileSource.relative("src/ztun.zig"), .target = target, .optimize = mode });
     lib.install();
 
-    const ztun_package = std.build.Pkg{
-        .name = "ztun",
-        .source = .{ .path = "src/ztun.zig" },
-    };
+    const ztun_module = b.addModule("ztun", .{ .source_file = std.Build.FileSource.relative("src/ztun.zig") });
 
-    const server_sample_executable = b.addExecutable("server", "samples/server.zig");
-    server_sample_executable.addPackage(ztun_package);
-    server_sample_executable.setBuildMode(mode);
-    server_sample_executable.setTarget(target);
+    const server_sample_executable = b.addExecutable(.{ .name = "server", .root_source_file = std.Build.FileSource.relative("samples/server.zig"), .target = target, .optimize = mode });
+    server_sample_executable.addModule("ztun", ztun_module);
     server_sample_executable.install();
 
-    const client_sample_executable = b.addExecutable("client", "samples/client.zig");
-    client_sample_executable.addPackage(ztun_package);
-    client_sample_executable.setBuildMode(mode);
-    client_sample_executable.setTarget(target);
+    const client_sample_executable = b.addExecutable(.{ .name = "client", .root_source_file = std.Build.FileSource.relative("samples/client.zig"), .target = target, .optimize = mode });
+    client_sample_executable.addModule("ztun", ztun_module);
     client_sample_executable.install();
 
-    const ztun_tests = b.addTest("src/ztun.zig");
-    ztun_tests.setBuildMode(mode);
+    const ztun_tests = b.addTest(.{ .root_source_file = std.Build.FileSource.relative("src/ztun.zig"), .optimize = mode });
 
     const test_step = b.step("test", "Run library tests");
     test_step.dependOn(&ztun_tests.step);

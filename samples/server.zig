@@ -83,7 +83,7 @@ pub fn main() anyerror!void {
             return error.UnexpectedFailure;
         }
 
-        for (fds) |*entry| {
+        for (&fds) |*entry| {
             if (entry.revents & linux.POLL.IN > 0) {
                 handleMessage(entry.fd, &server, buffer, arena_state.allocator()) catch |err| {
                     std.log.err("Unexpected error: {}", .{err});

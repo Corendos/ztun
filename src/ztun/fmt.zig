@@ -19,7 +19,7 @@ pub fn formatSliceHexSpacedImpl(
     buf[0] = '0';
     buf[1] = 'x';
 
-    for (bytes) |c, i| {
+    for (bytes, 0..) |c, i| {
         if (i > 0) {
             try writer.writeByte(' ');
         }
@@ -109,7 +109,7 @@ pub fn formatMessageImpl(message: ztun.Message, comptime fmt: []const u8, option
         try writer.print("{any}", .{message});
     } else {
         try writeMessageHeader(message, 0, writer);
-        for (message.attributes) |attribute, i| {
+        for (message.attributes, 0..) |attribute, i| {
             try writer.writeByteNTimes(' ', 8);
             try writer.print("[{: >2}]:\n", .{i});
             switch (attribute.type) {
@@ -190,7 +190,7 @@ pub fn formatMessageImpl(message: ztun.Message, comptime fmt: []const u8, option
                     const password_algorithms_attribute = try toTypedAttributeAllocOrWriteError(ztun.attr.common.PasswordAlgorithms, attribute, allocator_state.allocator(), writer) orelse continue;
                     try writer.writeByteNTimes(' ', 16);
                     try writer.writeAll("Type:  PASSWORD-ALGORITHMS\n");
-                    for (password_algorithms_attribute.algorithms) |algorithm, j| {
+                    for (password_algorithms_attribute.algorithms, 0..) |algorithm, j| {
                         try writer.writeByteNTimes(' ', 20);
                         try writer.print("[{: >2}]:\n", .{j});
                         try writer.writeByteNTimes(' ', 24);
@@ -224,7 +224,7 @@ pub fn formatMessageImpl(message: ztun.Message, comptime fmt: []const u8, option
                     const unknown_attributes_attribute = try toTypedAttributeAllocOrWriteError(ztun.attr.common.UnknownAttributes, attribute, allocator_state.allocator(), writer) orelse continue;
                     try writer.writeByteNTimes(' ', 16);
                     try writer.writeAll("Type: UNKNOWN-ATTRIBUTES\n");
-                    for (unknown_attributes_attribute.attribute_types) |a, j| {
+                    for (unknown_attributes_attribute.attribute_types, 0..) |a, j| {
                         try writer.writeByteNTimes(' ', 20);
                         try writer.print("[{: >2}]: 0x{x:0>4}\n", .{ j, a });
                     }

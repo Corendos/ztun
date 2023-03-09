@@ -181,7 +181,7 @@ const MessageIntegrityDetails = struct {
     /// Extracts details from a list of attribute.
     pub fn fromAttributes(attributes: []const ztun.Attribute) MessageIntegrityDetails {
         var details = MessageIntegrityDetails{};
-        for (attributes) |attribute, i| {
+        for (attributes, 0..) |attribute, i| {
             switch (attribute.type) {
                 @as(u16, ztun.attr.Type.message_integrity) => details.simple_index = i,
                 @as(u16, ztun.attr.Type.message_integrity_sha256) => details.sha256_index = i,
