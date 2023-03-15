@@ -9,6 +9,13 @@ const linux = std.os.linux;
 pub const SocketType = enum {
     ipv4,
     ipv6,
+
+    pub inline fn fromAddress(address: ztun.net.Address) SocketType {
+        return switch (address) {
+            .ipv4 => .ipv4,
+            .ipv6 => .ipv6,
+        };
+    }
 };
 
 pub fn createSocket(socket_type: SocketType) !i32 {
@@ -118,3 +125,33 @@ pub inline fn isIpv4MappedAddress(address: ztun.net.Ipv6Address) bool {
 pub inline fn extractIpv4MappedAddress(address: ztun.net.Ipv6Address) ztun.net.Address {
     return .{ .ipv4 = ztun.net.Ipv4Address{ .value = @truncate(u32, address.value), .port = address.port } };
 }
+
+pub const Options = struct {
+    address: ztun.net.Address,
+
+    pub fn fromArgsAlloc(allocator: std.mem.Allocator) !Options {
+        var options: Options = undefined;
+
+        var arg_iterator = try std.process.argsWithAllocator(allocator);
+        defer arg_iterator.deinit();
+
+        _ = arg_iterator.skip();
+
+        const raw_address = arg_iterator.next() orelse return error.MissingArgument;
+        const raw_port = arg_iterator.next() orelse return error.MissingArgument;
+
+        if (std.mem.indexOf(u8, raw_address, ":")) |_| {
+            // Probably IPv6
+            options.address = ztun.net.Address{
+                .ipv6 = try ztun.net.Ipv6Address.parse(raw_address, try std.fmt.parseUnsigned(u16, raw_port, 10)),
+            };
+        } else {
+            // Probably IPv4
+            options.address = ztun.net.Address{
+                .ipv4 = try ztun.net.Ipv4Address.parse(raw_address, try std.fmt.parseUnsigned(u16, raw_port, 10)),
+            };
+        }
+
+        return options;
+    }
+};

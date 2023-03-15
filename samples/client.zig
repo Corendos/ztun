@@ -7,43 +7,6 @@ const utils = @import("utils.zig");
 
 const linux = std.os.linux;
 
-const Options = struct {
-    server_address: ztun.net.Address,
-
-    pub fn fromArgsAlloc(allocator: std.mem.Allocator) !Options {
-        var options: Options = undefined;
-
-        var arg_iterator = try std.process.argsWithAllocator(allocator);
-        defer arg_iterator.deinit();
-
-        _ = arg_iterator.skip();
-
-        const raw_address = arg_iterator.next() orelse return error.MissingArgument;
-        const raw_port = arg_iterator.next() orelse return error.MissingArgument;
-
-        if (std.mem.indexOf(u8, raw_address, ":")) |_| {
-            // Probably IPv6
-            options.server_address = ztun.net.Address{
-                .ipv6 = try ztun.net.Ipv6Address.parse(raw_address, try std.fmt.parseUnsigned(u16, raw_port, 10)),
-            };
-        } else {
-            // Probably IPv4
-            options.server_address = ztun.net.Address{
-                .ipv4 = try ztun.net.Ipv4Address.parse(raw_address, try std.fmt.parseUnsigned(u16, raw_port, 10)),
-            };
-        }
-
-        return options;
-    }
-};
-
-pub fn socketTypeFromAddress(address: ztun.net.Address) utils.SocketType {
-    return switch (address) {
-        .ipv4 => .ipv4,
-        .ipv6 => .ipv6,
-    };
-}
-
 pub fn makeRequest(allocator: std.mem.Allocator, use_authentication: bool) !ztun.Message {
     var message_builder = ztun.MessageBuilder.init(allocator);
     defer message_builder.deinit();
@@ -76,10 +39,10 @@ pub fn main() anyerror!void {
     defer arena_state.deinit();
 
     // Parse options from command line.
-    const options = try Options.fromArgsAlloc(arena_state.allocator());
+    const options = try utils.Options.fromArgsAlloc(arena_state.allocator());
 
     // Create socket.
-    var socket = try utils.createSocket(socketTypeFromAddress(options.server_address));
+    var socket = try utils.createSocket(utils.SocketType.fromAddress(options.address));
 
     // Allocate buffer to serialize the request and deserialize the answer.
     var buffer = try arena_state.allocator().alloc(u8, 4096);
@@ -97,7 +60,7 @@ pub fn main() anyerror!void {
     };
 
     // Send the request to the remote server.
-    try utils.sendTo(socket, raw_request_message, options.server_address);
+    try utils.sendTo(socket, raw_request_message, options.address);
 
     // Receive the response
     const raw_message = try utils.receive(socket, buffer);
