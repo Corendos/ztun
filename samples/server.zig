@@ -7,17 +7,14 @@ const utils = @import("utils.zig");
 
 const linux = std.os.linux;
 
-pub fn createAndBindSockets() ![2]i32 {
-    const ipv4_bind_address = ztun.net.Address{ .ipv4 = try ztun.net.Ipv4Address.parse("127.0.0.1", 8888) };
-    const ipv6_bind_address = ztun.net.Address{ .ipv6 = try ztun.net.Ipv6Address.parse("::1", 8888) };
-
-    var ipv4_socket = try utils.createSocket(.ipv4);
-    try utils.bindSocket(ipv4_socket, ipv4_bind_address);
+pub fn createAndBindSocket() !i32 {
+    // This will be used in a dual-stack mode.
+    const ipv6_bind_address = ztun.net.Address{ .ipv6 = try ztun.net.Ipv6Address.parse("::", 3478) };
 
     var ipv6_socket = try utils.createSocket(.ipv6);
     try utils.bindSocket(ipv6_socket, ipv6_bind_address);
 
-    return .{ ipv4_socket, ipv6_socket };
+    return ipv6_socket;
 }
 
 pub fn handleMessage(fd: i32, server: *ztun.Server, buffer: []u8, allocator: std.mem.Allocator) !void {
@@ -48,14 +45,14 @@ pub fn main() anyerror!void {
     defer _ = gpa.deinit();
 
     // Initialize the Server with short-term authenitcation.
-    var server = ztun.Server.init(gpa.allocator(), ztun.Server.Options{ .authentication_type = .short_term });
+    var server = ztun.Server.init(gpa.allocator(), ztun.Server.Options{ .authentication_type = .none });
     defer server.deinit();
 
     // Register user "anon" with password "password".
     try server.registerUser("anon", .{ .short_term = .{ .password = "password" } });
 
-    // Create and bind sockets (IPv4 and IPv6) to localhost.
-    const sockets = try createAndBindSockets();
+    // Create and bind IPv6 dual-stack socket to localhost.
+    const socket = try createAndBindSocket();
 
     // Allocate the buffer used to receive the requests.
     var buffer = try gpa.allocator().alloc(u8, 4096);
@@ -68,8 +65,7 @@ pub fn main() anyerror!void {
 
     // Set up the file descriptors for poll.
     var fds = [_]linux.pollfd{
-        .{ .fd = sockets[0], .events = linux.POLL.IN, .revents = 0 },
-        .{ .fd = sockets[1], .events = linux.POLL.IN, .revents = 0 },
+        .{ .fd = socket, .events = linux.POLL.IN, .revents = 0 },
     };
 
     // Loop indefinitely

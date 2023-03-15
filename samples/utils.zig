@@ -91,8 +91,13 @@ pub fn receiveFrom(socket: i32, buf: []u8) !Message {
 
     const result = linux.recvfrom(socket, buf.ptr, buf.len, 0, &raw_address.any, &raw_address_length);
     if (linux.getErrno(result) != linux.E.SUCCESS) return error.ReceiveFailed;
-
-    const address = fromRawAddress(raw_address);
+    const address = addr: {
+        const address = fromRawAddress(raw_address);
+        if (address == .ipv6 and isIpv4MappedAddress(address.ipv6)) {
+            break :addr extractIpv4MappedAddress(address.ipv6);
+        }
+        break :addr address;
+    };
 
     return Message{
         .data = buf[0..result],
@@ -104,4 +109,12 @@ pub fn receive(socket: i32, buf: []u8) ![]const u8 {
     const result = linux.read(socket, buf.ptr, buf.len);
     if (linux.getErrno(result) != linux.E.SUCCESS) return error.ReceiveFailed;
     return buf[0..result];
+}
+
+pub inline fn isIpv4MappedAddress(address: ztun.net.Ipv6Address) bool {
+    return address.value & 0xFFFF_FFFF_FFFF_FFFF_FFFF_FFFF_0000_0000 == 0x0000_0000_0000_0000_0000_FFFF_0000_0000;
+}
+
+pub inline fn extractIpv4MappedAddress(address: ztun.net.Ipv6Address) ztun.net.Address {
+    return .{ .ipv4 = ztun.net.Ipv4Address{ .value = @truncate(u32, address.value), .port = address.port } };
 }
