@@ -116,7 +116,7 @@ pub const Ipv6Address = struct {
                 if (!saw_any_digits) {
                     if (abbrv) return error.InvalidCharacter; // ':::'
                     if (i != 0) abbrv = true;
-                    std.mem.set(u8, ip_slice[index..], 0);
+                    @memset(ip_slice[index..], 0);
                     ip_slice = tail[0..];
                     index = 0;
                     continue;
