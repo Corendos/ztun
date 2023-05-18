@@ -4,8 +4,6 @@
 const std = @import("std");
 const ztun = @import("ztun");
 
-const linux = std.os.linux;
-
 pub const SocketType = enum {
     ipv4,
     ipv6,
@@ -18,15 +16,13 @@ pub const SocketType = enum {
     }
 };
 
-pub fn createSocket(socket_type: SocketType) !i32 {
-    var result = switch (socket_type) {
-        .ipv4 => linux.socket(linux.PF.INET, linux.SOCK.DGRAM, 0),
-        .ipv6 => linux.socket(linux.PF.INET6, linux.SOCK.DGRAM, 0),
+pub fn createSocket(socket_type: SocketType) !std.os.socket_t {
+    var result = try switch (socket_type) {
+        .ipv4 => std.os.socket(std.os.AF.INET, std.os.SOCK.DGRAM, 0),
+        .ipv6 => std.os.socket(std.os.AF.INET6, std.os.SOCK.DGRAM, 0),
     };
-    if (linux.getErrno(result) != linux.E.SUCCESS) {
-        return error.SocketCreationFailed;
-    }
-    return @truncate(i32, @intCast(isize, result));
+
+    return result;
 }
 
 fn toRawAddress(address: ztun.net.Address) std.net.Address {
@@ -68,22 +64,14 @@ fn fromRawAddress(raw_address: *std.net.Address) ztun.net.Address {
     };
 }
 
-pub fn bindSocket(socket: i32, address: ztun.net.Address) !void {
+pub fn bindSocket(socket: std.os.socket_t, address: ztun.net.Address) !void {
     const raw_address = toRawAddress(address);
-    var result = linux.bind(socket, &raw_address.any, raw_address.getOsSockLen());
-    if (linux.getErrno(result) != linux.E.SUCCESS) {
-        std.log.err("{}", .{linux.getErrno(result)});
-        return error.SocketBindFailed;
-    }
+    try std.os.bind(socket, &raw_address.any, raw_address.getOsSockLen());
 }
 
-pub fn sendTo(socket: i32, bytes: []const u8, address: ztun.net.Address) !void {
+pub fn sendTo(socket: std.os.socket_t, bytes: []const u8, address: ztun.net.Address) !void {
     const raw_address = toRawAddress(address);
-    const result = linux.sendto(socket, bytes.ptr, bytes.len, 0, &raw_address.any, raw_address.getOsSockLen());
-    if (linux.getErrno(result) != linux.E.SUCCESS) {
-        std.log.err("{}", .{linux.getErrno(result)});
-        return error.SendFailed;
-    }
+    _ = try std.os.sendto(socket, bytes, 0, &raw_address.any, raw_address.getOsSockLen());
 }
 
 const Message = struct {
@@ -91,13 +79,12 @@ const Message = struct {
     source: ztun.net.Address,
 };
 
-pub fn receiveFrom(socket: i32, buf: []u8) !Message {
+pub fn receiveFrom(socket: std.os.socket_t, buf: []u8) !Message {
     var buffer: [std.os.sockaddr.SS_MAXSIZE]u8 align(4) = undefined;
-    var raw_address_length: linux.socklen_t = @sizeOf(@TypeOf(buffer));
+    var raw_address_length: std.os.socklen_t = @sizeOf(@TypeOf(buffer));
     var raw_address = @ptrCast(*std.net.Address, &buffer);
 
-    const result = linux.recvfrom(socket, buf.ptr, buf.len, 0, &raw_address.any, &raw_address_length);
-    if (linux.getErrno(result) != linux.E.SUCCESS) return error.ReceiveFailed;
+    const result = try std.os.recvfrom(socket, buf, 0, &raw_address.any, &raw_address_length);
     const address = addr: {
         const address = fromRawAddress(raw_address);
         if (address == .ipv6 and isIpv4MappedAddress(address.ipv6)) {
@@ -112,9 +99,8 @@ pub fn receiveFrom(socket: i32, buf: []u8) !Message {
     };
 }
 
-pub fn receive(socket: i32, buf: []u8) ![]const u8 {
-    const result = linux.read(socket, buf.ptr, buf.len);
-    if (linux.getErrno(result) != linux.E.SUCCESS) return error.ReceiveFailed;
+pub fn receive(socket: std.os.socket_t, buf: []u8) ![]const u8 {
+    const result = try std.os.read(socket, buf);
     return buf[0..result];
 }
 
