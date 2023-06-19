@@ -6,7 +6,7 @@ const std = @import("std");
 /// Writes the input bytes to the writer and pad with 0 to align the amount written to the given alignment.
 pub fn writeAllAligned(bytes: []const u8, alignment: usize, writer: anytype) !void {
     try writer.writeAll(bytes);
-    const padding = std.mem.alignForward(bytes.len, alignment) - bytes.len;
+    const padding = std.mem.alignForward(usize, bytes.len, alignment) - bytes.len;
     try writer.writeByteNTimes(0, padding);
 }
 
@@ -14,8 +14,8 @@ pub fn writeAllAligned(bytes: []const u8, alignment: usize, writer: anytype) !vo
 /// to the given alignment.
 pub fn readNoEofAligned(reader: anytype, alignment: usize, buf: []u8) !void {
     try reader.readNoEof(buf);
-    const padding = std.mem.alignForward(buf.len, alignment) - buf.len;
-    try reader.skipBytes(@as(u64, padding), .{ .buf_size = 16 });
+    const padding = std.mem.alignForward(u64, buf.len, alignment) - buf.len;
+    try reader.skipBytes(padding, .{ .buf_size = 16 });
 }
 
 //

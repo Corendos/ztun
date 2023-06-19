@@ -15,7 +15,7 @@ pub const Attribute = struct {
 
     /// Computes the attribute length in a message (padded to a 4 bytes boundary).
     pub fn length(self: Attribute) usize {
-        return 4 + std.mem.alignForward(self.data.len, 4);
+        return 4 + std.mem.alignForward(usize, self.data.len, 4);
     }
 };
 
@@ -502,7 +502,7 @@ pub const common = struct {
             while (stream.pos < stream.buffer.len) : (algorithms_count += 1) {
                 _ = reader.readIntBig(u16) catch return error.InvalidAttribute;
                 const length = reader.readIntBig(u16) catch return error.InvalidAttribute;
-                const aligned_length = std.mem.alignForward(length, 4);
+                const aligned_length = std.mem.alignForward(usize, length, 4);
                 reader.skipBytes(aligned_length, .{}) catch return error.InvalidAttribute;
             }
 
@@ -513,7 +513,7 @@ pub const common = struct {
             for (algorithms) |*algorithm| {
                 const @"type" = reader.readIntBig(u16) catch return error.InvalidAttribute;
                 const length = reader.readIntBig(u16) catch return error.InvalidAttribute;
-                const aligned_length = std.mem.alignForward(length, 4);
+                const aligned_length = std.mem.alignForward(usize, length, 4);
                 algorithm.type = @"type";
                 algorithm.parameters = stream.buffer[stream.pos .. stream.pos + length];
                 reader.skipBytes(aligned_length, .{}) catch return error.InvalidAttribute;
@@ -525,7 +525,7 @@ pub const common = struct {
         pub fn toAttribute(self: PasswordAlgorithms, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
             var data_size: usize = 0;
             for (self.algorithms) |algorithm| {
-                data_size += 4 + std.mem.alignForward(algorithm.parameters.len, 4);
+                data_size += 4 + std.mem.alignForward(usize, algorithm.parameters.len, 4);
             }
             var data = try allocator.alloc(u8, data_size);
             errdefer allocator.free(data);
@@ -555,7 +555,7 @@ pub const common = struct {
 
             const @"type" = reader.readIntBig(u16) catch return error.InvalidAttribute;
             const length = reader.readIntBig(u16) catch return error.InvalidAttribute;
-            const aligned_length = std.mem.alignForward(length, 4);
+            const aligned_length = std.mem.alignForward(usize, length, 4);
             const algorithm = Algorithm{
                 .type = @"type",
                 .parameters = stream.buffer[stream.pos .. stream.pos + length],
@@ -566,7 +566,7 @@ pub const common = struct {
         }
 
         pub fn toAttribute(self: PasswordAlgorithm, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
-            var data = try allocator.alloc(u8, 4 + std.mem.alignForward(self.algorithm.parameters.len, 4));
+            var data = try allocator.alloc(u8, 4 + std.mem.alignForward(usize, self.algorithm.parameters.len, 4));
             errdefer allocator.free(data);
 
             var stream = std.io.fixedBufferStream(data);
