@@ -5,7 +5,6 @@ const std = @import("std");
 
 pub const attr = @import("ztun/attributes.zig");
 pub const io = @import("ztun/io.zig");
-pub const net = @import("ztun/net.zig");
 pub const fmt = @import("ztun/fmt.zig");
 pub const auth = @import("ztun/authentication.zig");
 pub const constants = @import("ztun/constants.zig");

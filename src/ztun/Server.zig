@@ -5,7 +5,6 @@ const std = @import("std");
 const Self = @This();
 
 const attr = @import("attributes.zig");
-const net = @import("net.zig");
 const ztun = @import("../ztun.zig");
 
 const software_version_attribute = attr.common.Software{ .value = std.fmt.comptimePrint("ztun v{}", .{@import("constants.zig").version}) };
@@ -247,7 +246,7 @@ fn authenticate(self: Self, message: ztun.Message, message_integrity_details: Me
 }
 
 /// Handles a request after the basic checks and authentication (if needed) has been done.
-pub fn handleRequest(server: Self, message: ztun.Message, source: net.Address, authentication: ztun.auth.Authentication, message_integrity_details: MessageIntegrityDetails, temporary_arena: std.mem.Allocator, allocator: std.mem.Allocator) Error!MessageResult {
+pub fn handleRequest(server: Self, message: ztun.Message, source: std.net.Address, authentication: ztun.auth.Authentication, message_integrity_details: MessageIntegrityDetails, temporary_arena: std.mem.Allocator, allocator: std.mem.Allocator) Error!MessageResult {
     _ = server;
     std.log.debug("Received {s} request from {any}", .{ @tagName(message.type.method), source });
 
@@ -262,22 +261,24 @@ pub fn handleRequest(server: Self, message: ztun.Message, source: net.Address, a
     message_builder.setHeader(message.type.method, .error_response, message.transaction_id);
     message_builder.setClass(.success_response);
 
-    const xor_mapped_address_attribute = switch (source) {
-        .ipv4 => |ipv4| blk: {
+    const xor_mapped_address_attribute = switch (source.any.family) {
+        std.os.AF.INET => blk: {
+            const ipv4 = source.in;
             const xor_mapped_address_attribute = attr.common.encode(attr.common.MappedAddress{
-                .port = ipv4.port,
-                .family = attr.common.AddressFamily{ .ipv4 = ipv4.value },
+                .port = ipv4.sa.port,
+                .family = attr.common.AddressFamily{ .ipv4 = ipv4.sa.addr },
             }, message.transaction_id);
             break :blk try xor_mapped_address_attribute.toAttribute(allocator);
         },
-
-        .ipv6 => |ipv6| blk: {
+        std.os.AF.INET6 => blk: {
+            const ipv6 = source.in6;
             const xor_mapped_address_attribute = attr.common.encode(attr.common.MappedAddress{
-                .port = ipv6.port,
-                .family = attr.common.AddressFamily{ .ipv6 = ipv6.value },
+                .port = ipv6.sa.port,
+                .family = attr.common.AddressFamily{ .ipv6 = std.mem.bytesAsValue(u128, ipv6.sa.addr[0..]).* },
             }, message.transaction_id);
             break :blk try xor_mapped_address_attribute.toAttribute(allocator);
         },
+        else => return MessageResult{ .response = try makeBadRequestMessage(message, allocator) },
     };
     errdefer allocator.free(xor_mapped_address_attribute.data);
     try message_builder.addAttribute(xor_mapped_address_attribute);
@@ -337,7 +338,7 @@ pub const MessageResult = union(MessageResultType) {
 };
 
 /// Handles a message sent to the server and returns a `MessageResult` result or an error in case of critical failure.
-pub fn handleMessage(self: Self, message: ztun.Message, source: net.Address, allocator: std.mem.Allocator) !MessageResult {
+pub fn handleMessage(self: Self, message: ztun.Message, source: std.net.Address, allocator: std.mem.Allocator) !MessageResult {
     var temp_arena_state = std.heap.ArenaAllocator.init(self.allocator);
     defer temp_arena_state.deinit();
 
