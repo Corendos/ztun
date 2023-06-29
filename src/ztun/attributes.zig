@@ -59,7 +59,7 @@ pub inline fn isComprehensionOptional(value: u16) bool {
 /// Writes an attribute to the given writer.
 pub fn write(attribute: Attribute, writer: anytype) !void {
     try writer.writeIntBig(u16, attribute.type);
-    try writer.writeIntBig(u16, @intCast(u16, attribute.data.len));
+    try writer.writeIntBig(u16, @as(u16, @intCast(attribute.data.len)));
     try io.writeAllAligned(attribute.data, 4, writer);
 }
 
@@ -181,7 +181,7 @@ pub const common = struct {
             var stream = std.io.fixedBufferStream(data);
             var writer = stream.writer();
             writer.writeByte(0) catch unreachable;
-            writer.writeByte(@enumToInt(self.family)) catch unreachable;
+            writer.writeByte(@intFromEnum(self.family)) catch unreachable;
             writer.writeIntBig(u16, self.port) catch unreachable;
             switch (self.family) {
                 .ipv4 => |value| writer.writeIntBig(u32, value) catch unreachable,
@@ -229,7 +229,7 @@ pub const common = struct {
             var stream = std.io.fixedBufferStream(data);
             var writer = stream.writer();
             writer.writeByte(0) catch unreachable;
-            writer.writeByte(@enumToInt(self.x_family)) catch unreachable;
+            writer.writeByte(@intFromEnum(self.x_family)) catch unreachable;
             writer.writeIntBig(u16, self.x_port) catch unreachable;
             switch (self.x_family) {
                 .ipv4 => |value| writer.writeIntBig(u32, value) catch unreachable,
@@ -242,7 +242,7 @@ pub const common = struct {
 
     /// Encodes a MappedAddress to the corresponding XorMappedAddress.
     pub fn encode(mapped_address: MappedAddress, transaction_id: u96) XorMappedAddress {
-        const x_port = mapped_address.port ^ @truncate(u16, (magic_cookie & 0xFFFF0000) >> 16);
+        const x_port = mapped_address.port ^ @as(u16, @truncate((magic_cookie & 0xFFFF0000) >> 16));
 
         const x_family = switch (mapped_address.family) {
             .ipv4 => |address| AddressFamily{ .ipv4 = address ^ @as(u32, magic_cookie) },
@@ -260,7 +260,7 @@ pub const common = struct {
 
     /// Decodes a MappedAddress from the corresponding XorMappedAddress.
     pub fn decode(xor_mapped_address: XorMappedAddress, transaction_id: u96) MappedAddress {
-        const port = xor_mapped_address.x_port ^ @truncate(u16, (magic_cookie & 0xFFFF0000) >> 16);
+        const port = xor_mapped_address.x_port ^ @as(u16, @truncate((magic_cookie & 0xFFFF0000) >> 16));
 
         const family = switch (xor_mapped_address.x_family) {
             .ipv4 => |address| AddressFamily{ .ipv4 = address ^ @as(u32, magic_cookie) },
@@ -391,8 +391,8 @@ pub const common = struct {
 
     fn rawErrorCodeFromClassAndNumber(class: u3, number: u8) u32 {
         var value: u32 = 0;
-        value |= @intCast(u32, class) << 8;
-        value |= @intCast(u32, number);
+        value |= @as(u32, @intCast(class)) << 8;
+        value |= @as(u32, @intCast(number));
 
         return value;
     }
@@ -406,11 +406,11 @@ pub const common = struct {
         server_error = rawErrorCodeFromClassAndNumber(5, 0),
 
         pub inline fn class(self: RawErrorCode) u3 {
-            return @intCast(u3, (@as(u32, @enumToInt(self)) & 0b11100000000) >> 8);
+            return @as(u3, @intCast((@as(u32, @intFromEnum(self)) & 0b11100000000) >> 8));
         }
 
         pub inline fn number(self: RawErrorCode) u8 {
-            return @intCast(u8, @as(u32, @enumToInt(self)) & 0xFF);
+            return @as(u8, @intCast(@as(u32, @intFromEnum(self)) & 0xFF));
         }
     };
 
@@ -427,7 +427,7 @@ pub const common = struct {
             _ = reader.readIntBig(u16) catch return error.InvalidAttribute;
             const raw_class = reader.readByte() catch return error.InvalidAttribute;
             const raw_number = reader.readByte() catch return error.InvalidAttribute;
-            const raw_error_code = std.meta.intToEnum(RawErrorCode, rawErrorCodeFromClassAndNumber(@intCast(u3, raw_class), raw_number)) catch return error.InvalidAttribute;
+            const raw_error_code = std.meta.intToEnum(RawErrorCode, rawErrorCodeFromClassAndNumber(@as(u3, @intCast(raw_class)), raw_number)) catch return error.InvalidAttribute;
 
             const reason = stream.buffer[stream.pos..];
 
@@ -441,7 +441,7 @@ pub const common = struct {
             var stream = std.io.fixedBufferStream(data);
             var writer = stream.writer();
 
-            writer.writeIntBig(u32, @enumToInt(self.value)) catch unreachable;
+            writer.writeIntBig(u32, @intFromEnum(self.value)) catch unreachable;
             writer.writeAll(self.reason) catch unreachable;
 
             return Attribute{ .type = Type.error_code, .data = data };
@@ -535,7 +535,7 @@ pub const common = struct {
 
             for (self.algorithms) |algorithm| {
                 writer.writeIntBig(u16, algorithm.type) catch unreachable;
-                writer.writeIntBig(u16, @intCast(u16, algorithm.parameters.len)) catch unreachable;
+                writer.writeIntBig(u16, @as(u16, @intCast(algorithm.parameters.len))) catch unreachable;
                 io.writeAllAligned(algorithm.parameters, 4, writer) catch unreachable;
             }
 
@@ -573,7 +573,7 @@ pub const common = struct {
             var writer = stream.writer();
 
             writer.writeIntBig(u16, self.algorithm.type) catch unreachable;
-            writer.writeIntBig(u16, @intCast(u16, self.algorithm.parameters.len)) catch unreachable;
+            writer.writeIntBig(u16, @as(u16, @intCast(self.algorithm.parameters.len))) catch unreachable;
             io.writeAllAligned(self.algorithm.parameters, 4, writer) catch unreachable;
 
             return Attribute{ .type = Type.password_algorithm, .data = data };
@@ -667,7 +667,7 @@ pub const common = struct {
             var stream = std.io.fixedBufferStream(data);
             var writer = stream.writer();
             writer.writeByte(0) catch unreachable;
-            writer.writeByte(@enumToInt(self.family)) catch unreachable;
+            writer.writeByte(@intFromEnum(self.family)) catch unreachable;
             writer.writeIntBig(u16, self.port) catch unreachable;
             switch (self.family) {
                 .ipv4 => |value| writer.writeIntBig(u32, value) catch unreachable,

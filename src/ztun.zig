@@ -35,8 +35,8 @@ pub const MessageType = struct {
 
     /// Converts the message type to its integer representation.
     pub fn toInteger(self: MessageType) u14 {
-        const raw_class = @intCast(u14, @enumToInt(self.class));
-        const raw_method = @intCast(u14, @enumToInt(self.method));
+        const raw_class = @as(u14, @intCast(@intFromEnum(self.class)));
+        const raw_method = @as(u14, @intCast(@intFromEnum(self.method)));
 
         var raw_value: u14 = 0;
         raw_value |= (raw_method & 0b1111);
@@ -57,8 +57,8 @@ pub const MessageType = struct {
         raw_method |= (value & 0b11100000) >> 1;
         raw_method |= (value & 0b11111000000000) >> 2;
 
-        const class = @intToEnum(Class, @truncate(u2, raw_class));
-        const method = std.meta.intToEnum(Method, @truncate(u12, raw_method)) catch return null;
+        const class = @as(Class, @enumFromInt(@as(u2, @truncate(raw_class))));
+        const method = std.meta.intToEnum(Method, @as(u12, @truncate(raw_method))) catch return null;
         return MessageType{
             .class = class,
             .method = method,
@@ -69,12 +69,12 @@ pub const MessageType = struct {
 test "message type to integer" {
     {
         const message_type = MessageType{ .class = .request, .method = .binding };
-        const message_type_as_u16 = @intCast(u16, message_type.toInteger());
+        const message_type_as_u16 = @as(u16, @intCast(message_type.toInteger()));
         try std.testing.expectEqual(@as(u16, 0x0001), message_type_as_u16);
     }
     {
         const message_type = MessageType{ .class = .success_response, .method = .binding };
-        const message_type_as_u16 = @intCast(u16, message_type.toInteger());
+        const message_type_as_u16 = @as(u16, @intCast(message_type.toInteger()));
         try std.testing.expectEqual(@as(u16, 0x0101), message_type_as_u16);
     }
 }
@@ -82,13 +82,13 @@ test "message type to integer" {
 test "integer to message type" {
     {
         const raw_message_type: u16 = 0x0001;
-        const message_type = MessageType.tryFromInteger(@truncate(u14, raw_message_type));
+        const message_type = MessageType.tryFromInteger(@as(u14, @truncate(raw_message_type)));
         try std.testing.expect(message_type != null);
         try std.testing.expectEqual(MessageType{ .class = .request, .method = .binding }, message_type.?);
     }
     {
         const raw_message_type: u16 = 0x0101;
-        const message_type = MessageType.tryFromInteger(@truncate(u14, raw_message_type));
+        const message_type = MessageType.tryFromInteger(@as(u14, @truncate(raw_message_type)));
         try std.testing.expect(message_type != null);
         try std.testing.expectEqual(MessageType{ .class = .success_response, .method = .binding }, message_type.?);
     }
@@ -126,7 +126,7 @@ pub const Message = struct {
     pub fn fromParts(class: Class, method: Method, transaction_id: u96, attributes: []const Attribute) Self {
         var length: u16 = 0;
         for (attributes) |attribute| {
-            length += @truncate(u16, attribute.length());
+            length += @as(u16, @truncate(attribute.length()));
         }
 
         return Message{
@@ -148,8 +148,8 @@ pub const Message = struct {
 
     /// Writes the header of the message to the given writer.
     fn writeHeader(self: *const Self, writer: anytype) !void {
-        try writer.writeIntBig(u16, @intCast(u16, self.type.toInteger()));
-        try writer.writeIntBig(u16, @truncate(u16, self.length));
+        try writer.writeIntBig(u16, @as(u16, @intCast(self.type.toInteger())));
+        try writer.writeIntBig(u16, @as(u16, @truncate(self.length)));
         try writer.writeIntBig(u32, magic_cookie);
         try writer.writeIntBig(u96, self.transaction_id);
     }
@@ -227,7 +227,7 @@ pub const Message = struct {
         if (raw_message_type & 0b1100_0000_0000_0000 != 0) {
             return error.NonZeroStartingBits;
         }
-        return MessageType.tryFromInteger(@truncate(u14, raw_message_type)) orelse error.UnsupportedMethod;
+        return MessageType.tryFromInteger(@as(u14, @truncate(raw_message_type))) orelse error.UnsupportedMethod;
     }
 
     /// Tries to read the message from the given reader, allocating the required storage from the allocator. Returns a descriptive error on failure.
