@@ -265,16 +265,16 @@ pub fn handleRequest(server: Self, message: ztun.Message, source: std.net.Addres
         std.os.AF.INET => blk: {
             const ipv4 = source.in;
             const xor_mapped_address_attribute = attr.common.encode(attr.common.MappedAddress{
-                .port = ipv4.sa.port,
-                .family = attr.common.AddressFamily{ .ipv4 = ipv4.sa.addr },
+                .port = std.mem.bigToNative(u16, ipv4.sa.port),
+                .family = attr.common.AddressFamily{ .ipv4 = std.mem.toBytes(ipv4.sa.addr) },
             }, message.transaction_id);
             break :blk try xor_mapped_address_attribute.toAttribute(allocator);
         },
         std.os.AF.INET6 => blk: {
             const ipv6 = source.in6;
             const xor_mapped_address_attribute = attr.common.encode(attr.common.MappedAddress{
-                .port = ipv6.sa.port,
-                .family = attr.common.AddressFamily{ .ipv6 = std.mem.bytesAsValue(u128, ipv6.sa.addr[0..]).* },
+                .port = std.mem.bigToNative(u16, ipv6.sa.port),
+                .family = attr.common.AddressFamily{ .ipv6 = ipv6.sa.addr[0..16].* },
             }, message.transaction_id);
             break :blk try xor_mapped_address_attribute.toAttribute(allocator);
         },

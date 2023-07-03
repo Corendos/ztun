@@ -115,29 +115,21 @@ pub const common = struct {
     };
 
     pub const AddressFamily = union(AddressFamilyType) {
-        ipv4: u32,
-        ipv6: u128,
+        ipv4: [4]u8,
+        ipv6: [16]u8,
         pub fn format(self: AddressFamily, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
             switch (self) {
-                .ipv4 => |value| {
-                    const endian_corrected_value = std.mem.nativeToBig(u32, value);
-                    var bytes = std.mem.asBytes(&endian_corrected_value);
-                    try writer.print("{}.{}.{}.{}", .{ bytes[0], bytes[1], bytes[2], bytes[3] });
-                },
-                .ipv6 => |value| {
-                    const endian_corrected_value = std.mem.nativeToBig(u128, value);
-                    var bytes = std.mem.asBytes(&endian_corrected_value);
-                    try writer.print("{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}", .{
-                        bytes[0],  bytes[1],
-                        bytes[2],  bytes[3],
-                        bytes[4],  bytes[5],
-                        bytes[6],  bytes[7],
-                        bytes[8],  bytes[9],
-                        bytes[10], bytes[11],
-                        bytes[12], bytes[13],
-                        bytes[14], bytes[15],
-                    });
-                },
+                .ipv4 => |value| try writer.print("{}.{}.{}.{}", .{ value[0], value[1], value[2], value[3] }),
+                .ipv6 => |value| try writer.print("{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}", .{
+                    value[0],  value[1],
+                    value[2],  value[3],
+                    value[4],  value[5],
+                    value[6],  value[7],
+                    value[8],  value[9],
+                    value[10], value[11],
+                    value[12], value[13],
+                    value[14], value[15],
+                }),
             }
             _ = options;
             _ = fmt;
@@ -160,11 +152,11 @@ pub const common = struct {
             const port: u16 = reader.readIntBig(u16) catch return error.InvalidAttribute;
             switch (family_type) {
                 .ipv4 => {
-                    const raw_address = reader.readIntBig(u32) catch return error.InvalidAttribute;
+                    const raw_address = reader.readBytesNoEof(4) catch return error.InvalidAttribute;
                     return MappedAddress{ .family = .{ .ipv4 = raw_address }, .port = port };
                 },
                 .ipv6 => {
-                    const raw_address = reader.readIntBig(u128) catch return error.InvalidAttribute;
+                    const raw_address = reader.readBytesNoEof(16) catch return error.InvalidAttribute;
                     return MappedAddress{ .family = .{ .ipv6 = raw_address }, .port = port };
                 },
             }
@@ -184,8 +176,8 @@ pub const common = struct {
             writer.writeByte(@intFromEnum(self.family)) catch unreachable;
             writer.writeIntBig(u16, self.port) catch unreachable;
             switch (self.family) {
-                .ipv4 => |value| writer.writeIntBig(u32, value) catch unreachable,
-                .ipv6 => |value| writer.writeIntBig(u128, value) catch unreachable,
+                .ipv4 => |value| writer.writeAll(&value) catch unreachable,
+                .ipv6 => |value| writer.writeAll(&value) catch unreachable,
             }
 
             return Attribute{ .type = Type.mapped_address, .data = data };
@@ -208,11 +200,11 @@ pub const common = struct {
             const x_port: u16 = reader.readIntBig(u16) catch return error.InvalidAttribute;
             switch (x_family_type) {
                 .ipv4 => {
-                    const raw_address = reader.readIntBig(u32) catch return error.InvalidAttribute;
+                    const raw_address = reader.readBytesNoEof(4) catch return error.InvalidAttribute;
                     return XorMappedAddress{ .x_family = .{ .ipv4 = raw_address }, .x_port = x_port };
                 },
                 .ipv6 => {
-                    const raw_address = reader.readIntBig(u128) catch return error.InvalidAttribute;
+                    const raw_address = reader.readBytesNoEof(16) catch return error.InvalidAttribute;
                     return XorMappedAddress{ .x_family = .{ .ipv6 = raw_address }, .x_port = x_port };
                 },
             }
@@ -232,8 +224,8 @@ pub const common = struct {
             writer.writeByte(@intFromEnum(self.x_family)) catch unreachable;
             writer.writeIntBig(u16, self.x_port) catch unreachable;
             switch (self.x_family) {
-                .ipv4 => |value| writer.writeIntBig(u32, value) catch unreachable,
-                .ipv6 => |value| writer.writeIntBig(u128, value) catch unreachable,
+                .ipv4 => |value| writer.writeAll(&value) catch unreachable,
+                .ipv6 => |value| writer.writeAll(&value) catch unreachable,
             }
 
             return Attribute{ .type = Type.xor_mapped_address, .data = data };
@@ -245,10 +237,18 @@ pub const common = struct {
         const x_port = mapped_address.port ^ @as(u16, @truncate((magic_cookie & 0xFFFF0000) >> 16));
 
         const x_family = switch (mapped_address.family) {
-            .ipv4 => |address| AddressFamily{ .ipv4 = address ^ @as(u32, magic_cookie) },
-            .ipv6 => |address| blk: {
+            .ipv4 => |raw_address| blk: {
+                var address = std.mem.bytesToValue(u32, &raw_address);
+                // NOTE(Corendos): the XOR mask needs to be converted to big endian as that's how the address is stored.
+                address ^= std.mem.nativeToBig(u32, magic_cookie);
+                break :blk AddressFamily{ .ipv4 = std.mem.toBytes(address) };
+            },
+            .ipv6 => |raw_address| blk: {
+                var address = std.mem.bytesToValue(u128, &raw_address);
                 const mask: u128 = @as(u128, magic_cookie) << 96 | @as(u128, transaction_id);
-                break :blk AddressFamily{ .ipv6 = address ^ mask };
+                // NOTE(Corendos): the XOR mask needs to be converted to big endian as that's how the address is stored.
+                address ^= std.mem.nativeToBig(u128, mask);
+                break :blk AddressFamily{ .ipv6 = std.mem.toBytes(address) };
             },
         };
 
@@ -263,10 +263,18 @@ pub const common = struct {
         const port = xor_mapped_address.x_port ^ @as(u16, @truncate((magic_cookie & 0xFFFF0000) >> 16));
 
         const family = switch (xor_mapped_address.x_family) {
-            .ipv4 => |address| AddressFamily{ .ipv4 = address ^ @as(u32, magic_cookie) },
-            .ipv6 => |address| blk: {
+            .ipv4 => |raw_address| blk: {
+                var address = std.mem.bytesToValue(u32, &raw_address);
+                // NOTE(Corendos): the XOR mask needs to be converted to big endian as that's how the address is stored.
+                address ^= std.mem.nativeToBig(u32, magic_cookie);
+                break :blk AddressFamily{ .ipv4 = std.mem.toBytes(address) };
+            },
+            .ipv6 => |raw_address| blk: {
+                var address = std.mem.bytesToValue(u128, &raw_address);
                 const mask: u128 = @as(u128, magic_cookie) << 96 | @as(u128, transaction_id);
-                break :blk AddressFamily{ .ipv6 = address ^ mask };
+                // NOTE(Corendos): the XOR mask needs to be converted to big endian as that's how the address is stored.
+                address ^= std.mem.nativeToBig(u128, mask);
+                break :blk AddressFamily{ .ipv6 = std.mem.toBytes(address) };
             },
         };
 
@@ -646,11 +654,11 @@ pub const common = struct {
             const port: u16 = reader.readIntBig(u16) catch return error.InvalidAttribute;
             switch (family_type) {
                 .ipv4 => {
-                    const raw_address = reader.readIntBig(u32) catch return error.InvalidAttribute;
+                    const raw_address = reader.readBytesNoEof(4) catch return error.InvalidAttribute;
                     return AlternateServer{ .family = .{ .ipv4 = raw_address }, .port = port };
                 },
                 .ipv6 => {
-                    const raw_address = reader.readIntBig(u128) catch return error.InvalidAttribute;
+                    const raw_address = reader.readBytesNoEof(16) catch return error.InvalidAttribute;
                     return AlternateServer{ .family = .{ .ipv6 = raw_address }, .port = port };
                 },
             }
@@ -670,8 +678,8 @@ pub const common = struct {
             writer.writeByte(@intFromEnum(self.family)) catch unreachable;
             writer.writeIntBig(u16, self.port) catch unreachable;
             switch (self.family) {
-                .ipv4 => |value| writer.writeIntBig(u32, value) catch unreachable,
-                .ipv6 => |value| writer.writeIntBig(u128, value) catch unreachable,
+                .ipv4 => |value| writer.writeAll(&value) catch unreachable,
+                .ipv6 => |value| writer.writeAll(&value) catch unreachable,
             }
 
             return Attribute{ .type = Type.alternate_server, .data = data };
@@ -806,7 +814,7 @@ test "MAPPED-ADDRESS deserialization" {
 
     try std.testing.expectEqual(@as(u16, 0x0102), mapped_address_attribute.port);
     try std.testing.expectEqual(common.AddressFamilyType.ipv4, mapped_address_attribute.family);
-    try std.testing.expectEqual(@as(u32, 0x7F000001), mapped_address_attribute.family.ipv4);
+    try std.testing.expectEqual(std.mem.toBytes(std.mem.nativeToBig(u32, 0x7F000001)), mapped_address_attribute.family.ipv4);
 }
 
 test "XOR-MAPPED-ADDRESS deserialization" {
@@ -819,7 +827,7 @@ test "XOR-MAPPED-ADDRESS deserialization" {
         // Family type
         0x01,
         // X-Port
-        0x20, 0x10,
+        0xA1, 0x47,
         // X-Address
         0x5E, 0x12,
         0xA4, 0x43,
@@ -831,14 +839,14 @@ test "XOR-MAPPED-ADDRESS deserialization" {
 
     var xor_mapped_address_attribute = try common.XorMappedAddress.fromAttribute(attribute);
 
-    try std.testing.expectEqual(@as(u16, 0x2010), xor_mapped_address_attribute.x_port);
+    try std.testing.expectEqual(@as(u16, 0xA147), xor_mapped_address_attribute.x_port);
     try std.testing.expectEqual(common.AddressFamilyType.ipv4, xor_mapped_address_attribute.x_family);
-    try std.testing.expectEqual(@as(u32, 0x5E12A443), xor_mapped_address_attribute.x_family.ipv4);
+    try std.testing.expectEqual(std.mem.toBytes(std.mem.nativeToBig(u32, 0x5E12A443)), xor_mapped_address_attribute.x_family.ipv4);
 
     const decoded_attribute = common.decode(xor_mapped_address_attribute, 0x0);
-    try std.testing.expectEqual(@as(u16, 0x0102), decoded_attribute.port);
+    try std.testing.expectEqual(@as(u16, 32853), decoded_attribute.port);
     try std.testing.expectEqual(common.AddressFamilyType.ipv4, decoded_attribute.family);
-    try std.testing.expectEqual(@as(u32, 0x7F000001), decoded_attribute.family.ipv4);
+    try std.testing.expectEqual(std.mem.toBytes(std.mem.nativeToBig(u32, 0x7F000001)), decoded_attribute.family.ipv4);
 }
 
 test "USERNAME deserialization" {
@@ -1272,7 +1280,7 @@ test "ALTERNATE-SERVER deserialization" {
 
     try std.testing.expectEqual(@as(u16, 0x0102), alternate_server_attribute.port);
     try std.testing.expectEqual(common.AddressFamilyType.ipv4, alternate_server_attribute.family);
-    try std.testing.expectEqual(@as(u32, 0x7F000001), alternate_server_attribute.family.ipv4);
+    try std.testing.expectEqual(std.mem.toBytes(std.mem.nativeToBig(u32, 0x7F000001)), alternate_server_attribute.family.ipv4);
 }
 
 test "ALTERNATE-DOMAIN deserialization" {
@@ -1371,4 +1379,12 @@ test "ICE-CONTROLLING deserialization" {
     const ice_controlling_attribute = try common.IceControlling.fromAttribute(attribute);
 
     try std.testing.expectEqual(@as(u64, 0x0102030405060708), ice_controlling_attribute.value);
+}
+
+test "AddressFamily formatting" {
+    const ipv4 = common.AddressFamily{ .ipv4 = [_]u8{ 127, 0, 0, 1 } };
+    try std.testing.expectFmt("127.0.0.1", "{}", .{ipv4});
+
+    const ipv6 = common.AddressFamily{ .ipv6 = [_]u8{ 0x2a, 0x01, 0x0e, 0x0a, 0x08, 0x47, 0x64, 0x90, 0x60, 0x01, 0x31, 0xcd, 0xb2, 0xf8, 0x45, 0x37 } };
+    try std.testing.expectFmt("2a01:0e0a:0847:6490:6001:31cd:b2f8:4537", "{}", .{ipv6});
 }
