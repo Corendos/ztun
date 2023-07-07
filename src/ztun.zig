@@ -66,6 +66,13 @@ pub const MessageType = struct {
     }
 };
 
+/// Represents the header of the message, containing the message type and length.
+pub const Header = struct {
+    type: MessageType,
+    length: u16,
+    transaction_id: u96,
+};
+
 test "message type to integer" {
     {
         const message_type = MessageType{ .class = .request, .method = .binding };
@@ -230,6 +237,21 @@ pub const Message = struct {
         return MessageType.tryFromInteger(@as(u14, @truncate(raw_message_type))) orelse error.UnsupportedMethod;
     }
 
+    /// Tries to read the message header. Returns a descriptive error on failure.
+    pub fn readHeader(reader: anytype) DeserializationError!Header {
+        const message_type = try readMessageType(reader);
+        const message_length = try reader.readIntBig(u16);
+        const message_magic = try reader.readIntBig(u32);
+        if (message_magic != magic_cookie) return error.WrongMagicCookie;
+        const transaction_id = try reader.readIntBig(u96);
+
+        return Header{
+            .type = message_type,
+            .length = message_length,
+            .transaction_id = transaction_id,
+        };
+    }
+
     /// Tries to read the message from the given reader, allocating the required storage from the allocator. Returns a descriptive error on failure.
     /// The returned message is the owner of the attribute list.
     pub fn readAlloc(reader: anytype, allocator: std.mem.Allocator) DeserializationError!Message {
@@ -241,22 +263,18 @@ pub const Message = struct {
             attribute_list.deinit();
         }
 
-        const message_type = try readMessageType(reader);
-        const message_length = try reader.readIntBig(u16);
-        const message_magic = try reader.readIntBig(u32);
-        if (message_magic != magic_cookie) return error.WrongMagicCookie;
-        const transaction_id = try reader.readIntBig(u96);
+        const message_header = try readHeader(reader);
 
         var attribute_reader_state = std.io.countingReader(reader);
-        while (attribute_reader_state.bytes_read < message_length) {
+        while (attribute_reader_state.bytes_read < message_header.length) {
             const attribute = try attr.readAlloc(attribute_reader_state.reader(), allocator);
             try attribute_list.append(attribute);
         }
 
         return Message{
-            .type = message_type,
-            .transaction_id = transaction_id,
-            .length = message_length,
+            .type = message_header.type,
+            .transaction_id = message_header.transaction_id,
+            .length = message_header.length,
             .attributes = try attribute_list.toOwnedSlice(),
         };
     }
