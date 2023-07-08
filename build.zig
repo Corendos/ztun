@@ -10,9 +10,14 @@ pub fn module(b: *std.Build) *std.Build.Module {
 }
 
 pub fn build(b: *std.Build) void {
+    // Modules available to downstream dependencies
+    _ = b.addModule("ztun", .{
+        .source_file = .{ .path = thisDir() ++ "/src/ztun.zig" },
+    });
+
     // Standard release options allow the person running `zig build` to select
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
-    const mode = b.standardOptimizeOption(.{});
+    const optimize = b.standardOptimizeOption(.{});
     const target = b.standardTargetOptions(.{});
 
     const install_tests = b.option(bool, "install_tests", "Install tests exe during install step") orelse false;
@@ -20,7 +25,7 @@ pub fn build(b: *std.Build) void {
     const ztun_tests = b.addTest(.{
         .root_source_file = std.Build.FileSource.relative("src/ztun.zig"),
         .target = target,
-        .optimize = mode,
+        .optimize = optimize,
     });
     const ztun_tests_run = b.addRunArtifact(ztun_tests);
     if (install_tests) b.installArtifact(ztun_tests);
