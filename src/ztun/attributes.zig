@@ -411,6 +411,7 @@ pub const common = struct {
         unauthenticated = rawErrorCodeFromClassAndNumber(4, 1),
         unknown_attribute = rawErrorCodeFromClassAndNumber(4, 20),
         stale_nonce = rawErrorCodeFromClassAndNumber(4, 38),
+        role_conflict = rawErrorCodeFromClassAndNumber(4, 87),
         server_error = rawErrorCodeFromClassAndNumber(5, 0),
 
         pub inline fn class(self: RawErrorCode) u3 {
