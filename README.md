@@ -1,6 +1,6 @@
 `ztun` is an implementation of Session Traversal Utilities for NAT (STUN) (a.k.a [RFC 8489](https://www.rfc-editor.org/rfc/rfc8489.html)) in Zig.
 
-*Disclaimer:* This is still a work in progress !
+> :warning: This library is a work in progress
 
 ## Table Of Contents
 - [Supported zig version](#supported-zig-version)
@@ -8,13 +8,12 @@
 - [License](#license)
 
 ## Supported zig version
-`0.11.0-dev.3886+0c1bfe271`
+`0.12.0-dev.596+2adb932ad`
 
 ## Features
 
 * Platform agnostic core
 * Basic implementation of a STUN server
-* Client/Server samples
 * Short term authentication
 
 ## Missing features
