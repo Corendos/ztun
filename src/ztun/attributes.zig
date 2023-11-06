@@ -58,16 +58,16 @@ pub inline fn isComprehensionOptional(value: u16) bool {
 
 /// Writes an attribute to the given writer.
 pub fn write(attribute: Attribute, writer: anytype) !void {
-    try writer.writeIntBig(u16, attribute.type);
-    try writer.writeIntBig(u16, @as(u16, @intCast(attribute.data.len)));
+    try writer.writeInt(u16, attribute.type, .big);
+    try writer.writeInt(u16, @as(u16, @intCast(attribute.data.len)), .big);
     try io.writeAllAligned(attribute.data, 4, writer);
 }
 
 /// Reads an attribute from the given reader and allocate the required storage using the given allocator.
 /// The attribute owns the allocated memory.
 pub fn readAlloc(reader: anytype, allocator: std.mem.Allocator) !Attribute {
-    const @"type" = try reader.readIntBig(u16);
-    const len = try reader.readIntBig(u16);
+    const @"type" = try reader.readInt(u16, .big);
+    const len = try reader.readInt(u16, .big);
     var data = try allocator.alloc(u8, len);
     errdefer allocator.free(data);
 
@@ -149,7 +149,7 @@ pub const common = struct {
             _ = try reader.readByte();
             const raw_family_type = reader.readByte() catch return error.InvalidAttribute;
             const family_type = std.meta.intToEnum(AddressFamilyType, raw_family_type) catch return error.InvalidAttribute;
-            const port: u16 = reader.readIntBig(u16) catch return error.InvalidAttribute;
+            const port: u16 = reader.readInt(u16, .big) catch return error.InvalidAttribute;
             switch (family_type) {
                 .ipv4 => {
                     const raw_address = reader.readBytesNoEof(4) catch return error.InvalidAttribute;
@@ -174,7 +174,7 @@ pub const common = struct {
             var writer = stream.writer();
             writer.writeByte(0) catch unreachable;
             writer.writeByte(@intFromEnum(self.family)) catch unreachable;
-            writer.writeIntBig(u16, self.port) catch unreachable;
+            writer.writeInt(u16, self.port, .big) catch unreachable;
             switch (self.family) {
                 .ipv4 => |value| writer.writeAll(&value) catch unreachable,
                 .ipv6 => |value| writer.writeAll(&value) catch unreachable,
@@ -197,7 +197,7 @@ pub const common = struct {
             _ = try reader.readByte();
             const raw_x_family_type = reader.readByte() catch return error.InvalidAttribute;
             const x_family_type = std.meta.intToEnum(AddressFamilyType, raw_x_family_type) catch return error.InvalidAttribute;
-            const x_port: u16 = reader.readIntBig(u16) catch return error.InvalidAttribute;
+            const x_port: u16 = reader.readInt(u16, .big) catch return error.InvalidAttribute;
             switch (x_family_type) {
                 .ipv4 => {
                     const raw_address = reader.readBytesNoEof(4) catch return error.InvalidAttribute;
@@ -222,7 +222,7 @@ pub const common = struct {
             var writer = stream.writer();
             writer.writeByte(0) catch unreachable;
             writer.writeByte(@intFromEnum(self.x_family)) catch unreachable;
-            writer.writeIntBig(u16, self.x_port) catch unreachable;
+            writer.writeInt(u16, self.x_port, .big) catch unreachable;
             switch (self.x_family) {
                 .ipv4 => |value| writer.writeAll(&value) catch unreachable,
                 .ipv6 => |value| writer.writeAll(&value) catch unreachable,
@@ -378,7 +378,7 @@ pub const common = struct {
             var stream = std.io.fixedBufferStream(attribute.data);
             var reader = stream.reader();
 
-            var value = reader.readIntBig(u32) catch return error.InvalidAttribute;
+            var value = reader.readInt(u32, .big) catch return error.InvalidAttribute;
             return Fingerprint{
                 .value = value,
             };
@@ -391,7 +391,7 @@ pub const common = struct {
             var stream = std.io.fixedBufferStream(data);
             var writer = stream.writer();
 
-            writer.writeIntBig(u32, self.value) catch unreachable;
+            writer.writeInt(u32, self.value, .big) catch unreachable;
 
             return Attribute{ .type = Type.fingerprint, .data = data };
         }
@@ -433,7 +433,7 @@ pub const common = struct {
             var stream = std.io.fixedBufferStream(attribute.data);
             var reader = stream.reader();
 
-            _ = reader.readIntBig(u16) catch return error.InvalidAttribute;
+            _ = reader.readInt(u16, .big) catch return error.InvalidAttribute;
             const raw_class = reader.readByte() catch return error.InvalidAttribute;
             const raw_number = reader.readByte() catch return error.InvalidAttribute;
             const raw_error_code = std.meta.intToEnum(RawErrorCode, rawErrorCodeFromClassAndNumber(@as(u3, @intCast(raw_class)), raw_number)) catch return error.InvalidAttribute;
@@ -450,7 +450,7 @@ pub const common = struct {
             var stream = std.io.fixedBufferStream(data);
             var writer = stream.writer();
 
-            writer.writeIntBig(u32, @intFromEnum(self.value)) catch unreachable;
+            writer.writeInt(u32, @intFromEnum(self.value), .big) catch unreachable;
             writer.writeAll(self.reason) catch unreachable;
 
             return Attribute{ .type = Type.error_code, .data = data };
@@ -509,8 +509,8 @@ pub const common = struct {
 
             var algorithms_count: usize = 0;
             while (stream.pos < stream.buffer.len) : (algorithms_count += 1) {
-                _ = reader.readIntBig(u16) catch return error.InvalidAttribute;
-                const length = reader.readIntBig(u16) catch return error.InvalidAttribute;
+                _ = reader.readInt(u16, .big) catch return error.InvalidAttribute;
+                const length = reader.readInt(u16, .big) catch return error.InvalidAttribute;
                 const aligned_length = std.mem.alignForward(usize, length, 4);
                 reader.skipBytes(aligned_length, .{}) catch return error.InvalidAttribute;
             }
@@ -520,8 +520,8 @@ pub const common = struct {
 
             stream.reset();
             for (algorithms) |*algorithm| {
-                const @"type" = reader.readIntBig(u16) catch return error.InvalidAttribute;
-                const length = reader.readIntBig(u16) catch return error.InvalidAttribute;
+                const @"type" = reader.readInt(u16, .big) catch return error.InvalidAttribute;
+                const length = reader.readInt(u16, .big) catch return error.InvalidAttribute;
                 const aligned_length = std.mem.alignForward(usize, length, 4);
                 algorithm.type = @"type";
                 algorithm.parameters = stream.buffer[stream.pos .. stream.pos + length];
@@ -543,8 +543,8 @@ pub const common = struct {
             var writer = stream.writer();
 
             for (self.algorithms) |algorithm| {
-                writer.writeIntBig(u16, algorithm.type) catch unreachable;
-                writer.writeIntBig(u16, @as(u16, @intCast(algorithm.parameters.len))) catch unreachable;
+                writer.writeInt(u16, algorithm.type, .big) catch unreachable;
+                writer.writeInt(u16, @as(u16, @intCast(algorithm.parameters.len)), .big) catch unreachable;
                 io.writeAllAligned(algorithm.parameters, 4, writer) catch unreachable;
             }
 
@@ -562,8 +562,8 @@ pub const common = struct {
             var stream = std.io.fixedBufferStream(attribute.data);
             var reader = stream.reader();
 
-            const @"type" = reader.readIntBig(u16) catch return error.InvalidAttribute;
-            const length = reader.readIntBig(u16) catch return error.InvalidAttribute;
+            const @"type" = reader.readInt(u16, .big) catch return error.InvalidAttribute;
+            const length = reader.readInt(u16, .big) catch return error.InvalidAttribute;
             const aligned_length = std.mem.alignForward(usize, length, 4);
             const algorithm = Algorithm{
                 .type = @"type",
@@ -581,8 +581,8 @@ pub const common = struct {
             var stream = std.io.fixedBufferStream(data);
             var writer = stream.writer();
 
-            writer.writeIntBig(u16, self.algorithm.type) catch unreachable;
-            writer.writeIntBig(u16, @as(u16, @intCast(self.algorithm.parameters.len))) catch unreachable;
+            writer.writeInt(u16, self.algorithm.type, .big) catch unreachable;
+            writer.writeInt(u16, @as(u16, @intCast(self.algorithm.parameters.len)), .big) catch unreachable;
             io.writeAllAligned(self.algorithm.parameters, 4, writer) catch unreachable;
 
             return Attribute{ .type = Type.password_algorithm, .data = data };
@@ -603,7 +603,7 @@ pub const common = struct {
             var reader = stream.reader();
 
             for (attribute_types) |*attribute_type| {
-                attribute_type.* = reader.readIntBig(u16) catch return error.InvalidAttribute;
+                attribute_type.* = reader.readInt(u16, .big) catch return error.InvalidAttribute;
             }
 
             return UnknownAttributes{ .attribute_types = attribute_types };
@@ -617,7 +617,7 @@ pub const common = struct {
             var writer = stream.writer();
 
             for (self.attribute_types) |attribute_type| {
-                writer.writeIntBig(u16, attribute_type) catch unreachable;
+                writer.writeInt(u16, attribute_type, .big) catch unreachable;
             }
 
             return Attribute{ .type = Type.unknown_attributes, .data = data };
@@ -652,7 +652,7 @@ pub const common = struct {
             _ = try reader.readByte();
             const raw_family_type = reader.readByte() catch return error.InvalidAttribute;
             const family_type = std.meta.intToEnum(AddressFamilyType, raw_family_type) catch return error.InvalidAttribute;
-            const port: u16 = reader.readIntBig(u16) catch return error.InvalidAttribute;
+            const port: u16 = reader.readInt(u16, .big) catch return error.InvalidAttribute;
             switch (family_type) {
                 .ipv4 => {
                     const raw_address = reader.readBytesNoEof(4) catch return error.InvalidAttribute;
@@ -677,7 +677,7 @@ pub const common = struct {
             var writer = stream.writer();
             writer.writeByte(0) catch unreachable;
             writer.writeByte(@intFromEnum(self.family)) catch unreachable;
-            writer.writeIntBig(u16, self.port) catch unreachable;
+            writer.writeInt(u16, self.port, .big) catch unreachable;
             switch (self.family) {
                 .ipv4 => |value| writer.writeAll(&value) catch unreachable,
                 .ipv6 => |value| writer.writeAll(&value) catch unreachable,
@@ -711,7 +711,7 @@ pub const common = struct {
 
             var stream = std.io.fixedBufferStream(attribute.data);
             var reader = stream.reader();
-            const value = reader.readIntBig(u32) catch return error.InvalidAttribute;
+            const value = reader.readInt(u32, .big) catch return error.InvalidAttribute;
             return Priority{ .value = value };
         }
 
@@ -721,7 +721,7 @@ pub const common = struct {
 
             var stream = std.io.fixedBufferStream(data);
             var writer = stream.writer();
-            writer.writeIntBig(u32, self.value) catch unreachable;
+            writer.writeInt(u32, self.value, .big) catch unreachable;
 
             return Attribute{ .type = Type.priority, .data = data };
         }
@@ -750,7 +750,7 @@ pub const common = struct {
 
             var stream = std.io.fixedBufferStream(attribute.data);
             var reader = stream.reader();
-            const value = reader.readIntBig(u64) catch return error.InvalidAttribute;
+            const value = reader.readInt(u64, .big) catch return error.InvalidAttribute;
             return IceControlled{ .value = value };
         }
 
@@ -760,7 +760,7 @@ pub const common = struct {
 
             var stream = std.io.fixedBufferStream(data);
             var writer = stream.writer();
-            writer.writeIntBig(u64, self.value) catch unreachable;
+            writer.writeInt(u64, self.value, .big) catch unreachable;
 
             return Attribute{ .type = Type.ice_controlled, .data = data };
         }
@@ -775,7 +775,7 @@ pub const common = struct {
 
             var stream = std.io.fixedBufferStream(attribute.data);
             var reader = stream.reader();
-            const value = reader.readIntBig(u64) catch return error.InvalidAttribute;
+            const value = reader.readInt(u64, .big) catch return error.InvalidAttribute;
             return IceControlling{ .value = value };
         }
 
@@ -785,7 +785,7 @@ pub const common = struct {
 
             var stream = std.io.fixedBufferStream(data);
             var writer = stream.writer();
-            writer.writeIntBig(u64, self.value) catch unreachable;
+            writer.writeInt(u64, self.value, .big) catch unreachable;
 
             return Attribute{ .type = Type.ice_controlling, .data = data };
         }

@@ -155,10 +155,10 @@ pub const Message = struct {
 
     /// Writes the header of the message to the given writer.
     fn writeHeader(self: *const Self, writer: anytype) !void {
-        try writer.writeIntBig(u16, @as(u16, @intCast(self.type.toInteger())));
-        try writer.writeIntBig(u16, @as(u16, @truncate(self.length)));
-        try writer.writeIntBig(u32, magic_cookie);
-        try writer.writeIntBig(u96, self.transaction_id);
+        try writer.writeInt(u16, @as(u16, @intCast(self.type.toInteger())), .big);
+        try writer.writeInt(u16, @as(u16, @truncate(self.length)), .big);
+        try writer.writeInt(u32, magic_cookie, .big);
+        try writer.writeInt(u96, self.transaction_id, .big);
     }
 
     /// Writes the list of attributes to the given writer.
@@ -230,7 +230,7 @@ pub const Message = struct {
 
     /// Tries to read the message type from the given reader. Returns a descriptive error on failure.
     fn readMessageType(reader: anytype) DeserializationError!MessageType {
-        const raw_message_type: u16 = try reader.readIntBig(u16);
+        const raw_message_type: u16 = try reader.readInt(u16, .big);
         if (raw_message_type & 0b1100_0000_0000_0000 != 0) {
             return error.NonZeroStartingBits;
         }
@@ -240,10 +240,10 @@ pub const Message = struct {
     /// Tries to read the message header. Returns a descriptive error on failure.
     pub fn readHeader(reader: anytype) DeserializationError!Header {
         const message_type = try readMessageType(reader);
-        const message_length = try reader.readIntBig(u16);
-        const message_magic = try reader.readIntBig(u32);
+        const message_length = try reader.readInt(u16, .big);
+        const message_magic = try reader.readInt(u32, .big);
         if (message_magic != magic_cookie) return error.WrongMagicCookie;
-        const transaction_id = try reader.readIntBig(u96);
+        const transaction_id = try reader.readInt(u96, .big);
 
         return Header{
             .type = message_type,
