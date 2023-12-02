@@ -1,3 +1,9 @@
+<p align="center">
+    <a href="https://github.com/Corendos/ztun/actions/workflows/main.yaml" alt="Actions">
+        <img src="https://github.com/Corendos/ztun/actions/workflows/main.yaml/badge.svg" />
+    </a>
+</p>
+
 `ztun` is an implementation of Session Traversal Utilities for NAT (STUN) (a.k.a [RFC 8489](https://www.rfc-editor.org/rfc/rfc8489.html)) in Zig.
 
 > :warning: This library is a work in progress
