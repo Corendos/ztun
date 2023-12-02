@@ -83,7 +83,7 @@ test "write all aligned" {
 test "read all aligned" {
     var buffer = [_]u8{0} ** 128;
     const str = "This is a test";
-    std.mem.copy(u8, &buffer, str);
+    @memcpy(buffer[0..str.len], str);
     var stream = std.io.fixedBufferStream(&buffer);
 
     var output_buffer: [str.len]u8 = undefined;

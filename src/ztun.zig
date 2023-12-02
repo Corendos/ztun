@@ -178,7 +178,7 @@ pub const Message = struct {
     /// It returns a value that can be used directly in a FINGERPRINT attribute added to the list of attributes.
     /// This requires a temporary allocator to handle message serialization.
     pub fn computeFingerprint(self: *const Self, temp_allocator: std.mem.Allocator) error{OutOfMemory}!u32 {
-        var buffer = try temp_allocator.alloc(u8, 2048);
+        const buffer = try temp_allocator.alloc(u8, 2048);
         defer temp_allocator.free(buffer);
 
         var message = self.*;
@@ -196,7 +196,7 @@ pub const Message = struct {
         var hmac_buffer = try allocator.alloc(u8, 20);
         errdefer allocator.free(hmac_buffer);
 
-        var buffer = try allocator.alloc(u8, 2048);
+        const buffer = try allocator.alloc(u8, 2048);
         defer allocator.free(buffer);
 
         var message = self.*;
@@ -215,7 +215,7 @@ pub const Message = struct {
         var hmac_buffer = try allocator.alloc(u8, 32);
         errdefer allocator.free(hmac_buffer);
 
-        var buffer = try allocator.alloc(u8, 2048);
+        const buffer = try allocator.alloc(u8, 2048);
         defer allocator.free(buffer);
 
         var message = self.*;
@@ -282,7 +282,7 @@ pub const Message = struct {
     /// Checks that the given message bears the correct fingerprint. Returns true if so, false otherwise.
     /// In case of any error, the function returns false.
     pub fn checkFingerprint(self: Self, allocator: std.mem.Allocator) bool {
-        var fingerprint = for (self.attributes, 0..) |a, i| {
+        const fingerprint = for (self.attributes, 0..) |a, i| {
             if (a.type == @as(u16, attr.Type.fingerprint)) {
                 const fingerprint_attribute = attr.common.Fingerprint.fromAttribute(a) catch return false;
                 // The fingerprint attribute must be the last one.
@@ -419,7 +419,7 @@ pub const MessageBuilder = struct {
         var message_integrity_attribute: attr.common.MessageIntegrity = undefined;
         const message = Message.fromParts(self.class.?, self.method.?, self.transaction_id.?, self.attribute_list.items);
         const hmac = message.computeMessageIntegrity(temp_allocator, hmac_key) catch unreachable;
-        std.mem.copy(u8, message_integrity_attribute.value[0..], hmac);
+        @memcpy(message_integrity_attribute.value[0..], hmac);
 
         const attribute = try message_integrity_attribute.toAttribute(self.allocator);
         errdefer self.allocator.free(attribute.data);
@@ -436,7 +436,7 @@ pub const MessageBuilder = struct {
         var message_integrity_sha256_attribute: attr.common.MessageIntegritySha256 = undefined;
         const message = Message.fromParts(self.class.?, self.method.?, self.transaction_id.?, self.attribute_list.items);
         const hmac = message.computeMessageIntegritySha256(temp_allocator, hmac_key) catch unreachable;
-        std.mem.copy(u8, message_integrity_sha256_attribute.storage[0..], hmac);
+        @memcpy(message_integrity_sha256_attribute.storage[0..], hmac);
         message_integrity_sha256_attribute.length = hmac.len;
 
         const attribute = try message_integrity_sha256_attribute.toAttribute(self.allocator);

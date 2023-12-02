@@ -68,7 +68,7 @@ pub fn write(attribute: Attribute, writer: anytype) !void {
 pub fn readAlloc(reader: anytype, allocator: std.mem.Allocator) !Attribute {
     const @"type" = try reader.readInt(u16, .big);
     const len = try reader.readInt(u16, .big);
-    var data = try allocator.alloc(u8, len);
+    const data = try allocator.alloc(u8, len);
     errdefer allocator.free(data);
 
     try io.readNoEofAligned(reader, 4, data);
@@ -167,7 +167,7 @@ pub const common = struct {
                 .ipv4 => 4,
                 .ipv6 => 16,
             });
-            var data = try allocator.alloc(u8, data_size);
+            const data = try allocator.alloc(u8, data_size);
             errdefer allocator.free(data);
 
             var stream = std.io.fixedBufferStream(data);
@@ -215,7 +215,7 @@ pub const common = struct {
                 .ipv4 => 4,
                 .ipv6 => 16,
             });
-            var data = try allocator.alloc(u8, data_size);
+            const data = try allocator.alloc(u8, data_size);
             errdefer allocator.free(data);
 
             var stream = std.io.fixedBufferStream(data);
@@ -307,15 +307,15 @@ pub const common = struct {
             if (attribute.type != Type.userhash) return error.InvalidAttribute;
             if (attribute.data.len != 32) return error.InvalidAttribute;
             var self: Userhash = undefined;
-            std.mem.copy(u8, &self.value, attribute.data);
+            @memcpy(&self.value, attribute.data);
             return self;
         }
 
         pub fn toAttribute(self: Userhash, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
-            var data = try allocator.alloc(u8, self.value.len);
+            const data = try allocator.alloc(u8, self.value.len);
             errdefer allocator.free(data);
 
-            std.mem.copy(u8, data, &self.value);
+            @memcpy(data, &self.value);
 
             return Attribute{ .type = Type.userhash, .data = data };
         }
@@ -329,15 +329,15 @@ pub const common = struct {
             if (attribute.type != Type.message_integrity) return error.InvalidAttribute;
             if (attribute.data.len != 20) return error.InvalidAttribute;
             var self: MessageIntegrity = undefined;
-            std.mem.copy(u8, &self.value, attribute.data);
+            @memcpy(&self.value, attribute.data);
             return self;
         }
 
         pub fn toAttribute(self: MessageIntegrity, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
-            var data = try allocator.alloc(u8, self.value.len);
+            const data = try allocator.alloc(u8, self.value.len);
             errdefer allocator.free(data);
 
-            std.mem.copy(u8, data, &self.value);
+            @memcpy(data, &self.value);
 
             return Attribute{ .type = Type.message_integrity, .data = data };
         }
@@ -355,15 +355,15 @@ pub const common = struct {
                 .storage = undefined,
                 .length = attribute.data.len,
             };
-            std.mem.copy(u8, self.storage[0..attribute.data.len], attribute.data);
+            @memcpy(self.storage[0..attribute.data.len], attribute.data);
             return self;
         }
 
         pub fn toAttribute(self: MessageIntegritySha256, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
-            var data = try allocator.alloc(u8, self.length);
+            const data = try allocator.alloc(u8, self.length);
             errdefer allocator.free(data);
 
-            std.mem.copy(u8, data, self.storage[0..self.length]);
+            @memcpy(data, self.storage[0..self.length]);
 
             return Attribute{ .type = Type.message_integrity_sha256, .data = data };
         }
@@ -378,14 +378,14 @@ pub const common = struct {
             var stream = std.io.fixedBufferStream(attribute.data);
             var reader = stream.reader();
 
-            var value = reader.readInt(u32, .big) catch return error.InvalidAttribute;
+            const value = reader.readInt(u32, .big) catch return error.InvalidAttribute;
             return Fingerprint{
                 .value = value,
             };
         }
 
         pub fn toAttribute(self: Fingerprint, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
-            var data = try allocator.alloc(u8, 4);
+            const data = try allocator.alloc(u8, 4);
             errdefer allocator.free(data);
 
             var stream = std.io.fixedBufferStream(data);
@@ -444,7 +444,7 @@ pub const common = struct {
         }
 
         pub fn toAttribute(self: ErrorCode, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
-            var data = try allocator.alloc(u8, 4 + self.reason.len);
+            const data = try allocator.alloc(u8, 4 + self.reason.len);
             errdefer allocator.free(data);
 
             var stream = std.io.fixedBufferStream(data);
@@ -515,7 +515,7 @@ pub const common = struct {
                 reader.skipBytes(aligned_length, .{}) catch return error.InvalidAttribute;
             }
 
-            var algorithms = try allocator.alloc(Algorithm, algorithms_count);
+            const algorithms = try allocator.alloc(Algorithm, algorithms_count);
             errdefer allocator.free(algorithms);
 
             stream.reset();
@@ -536,7 +536,7 @@ pub const common = struct {
             for (self.algorithms) |algorithm| {
                 data_size += 4 + std.mem.alignForward(usize, algorithm.parameters.len, 4);
             }
-            var data = try allocator.alloc(u8, data_size);
+            const data = try allocator.alloc(u8, data_size);
             errdefer allocator.free(data);
 
             var stream = std.io.fixedBufferStream(data);
@@ -575,7 +575,7 @@ pub const common = struct {
         }
 
         pub fn toAttribute(self: PasswordAlgorithm, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
-            var data = try allocator.alloc(u8, 4 + std.mem.alignForward(usize, self.algorithm.parameters.len, 4));
+            const data = try allocator.alloc(u8, 4 + std.mem.alignForward(usize, self.algorithm.parameters.len, 4));
             errdefer allocator.free(data);
 
             var stream = std.io.fixedBufferStream(data);
@@ -596,7 +596,7 @@ pub const common = struct {
         pub fn fromAttribute(attribute: Attribute, allocator: std.mem.Allocator) ConversionError!UnknownAttributes {
             if (attribute.type != Type.unknown_attributes) return error.InvalidAttribute;
 
-            var attribute_types = try allocator.alloc(u16, attribute.data.len / 2);
+            const attribute_types = try allocator.alloc(u16, attribute.data.len / 2);
             errdefer allocator.free(attribute_types);
 
             var stream = std.io.fixedBufferStream(attribute.data);
@@ -610,7 +610,7 @@ pub const common = struct {
         }
 
         pub fn toAttribute(self: UnknownAttributes, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
-            var data = try allocator.alloc(u8, self.attribute_types.len * 2);
+            const data = try allocator.alloc(u8, self.attribute_types.len * 2);
             errdefer allocator.free(data);
 
             var stream = std.io.fixedBufferStream(data);
@@ -670,7 +670,7 @@ pub const common = struct {
                 .ipv4 => 4,
                 .ipv6 => 16,
             });
-            var data = try allocator.alloc(u8, data_size);
+            const data = try allocator.alloc(u8, data_size);
             errdefer allocator.free(data);
 
             var stream = std.io.fixedBufferStream(data);
@@ -716,7 +716,7 @@ pub const common = struct {
         }
 
         pub fn toAttribute(self: Priority, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
-            var data = try allocator.alloc(u8, 4);
+            const data = try allocator.alloc(u8, 4);
             errdefer allocator.free(data);
 
             var stream = std.io.fixedBufferStream(data);
@@ -755,7 +755,7 @@ pub const common = struct {
         }
 
         pub fn toAttribute(self: IceControlled, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
-            var data = try allocator.alloc(u8, 8);
+            const data = try allocator.alloc(u8, 8);
             errdefer allocator.free(data);
 
             var stream = std.io.fixedBufferStream(data);
@@ -780,7 +780,7 @@ pub const common = struct {
         }
 
         pub fn toAttribute(self: IceControlling, allocator: std.mem.Allocator) error{OutOfMemory}!Attribute {
-            var data = try allocator.alloc(u8, 8);
+            const data = try allocator.alloc(u8, 8);
             errdefer allocator.free(data);
 
             var stream = std.io.fixedBufferStream(data);
@@ -808,10 +808,10 @@ test "MAPPED-ADDRESS deserialization" {
         0,    1,
     };
     var stream = std.io.fixedBufferStream(&buffer);
-    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
-    var mapped_address_attribute = try common.MappedAddress.fromAttribute(attribute);
+    const mapped_address_attribute = try common.MappedAddress.fromAttribute(attribute);
 
     try std.testing.expectEqual(@as(u16, 0x0102), mapped_address_attribute.port);
     try std.testing.expectEqual(common.AddressFamilyType.ipv4, mapped_address_attribute.family);
@@ -835,10 +835,10 @@ test "XOR-MAPPED-ADDRESS deserialization" {
     };
 
     var stream = std.io.fixedBufferStream(&buffer);
-    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
-    var xor_mapped_address_attribute = try common.XorMappedAddress.fromAttribute(attribute);
+    const xor_mapped_address_attribute = try common.XorMappedAddress.fromAttribute(attribute);
 
     try std.testing.expectEqual(@as(u16, 0xA147), xor_mapped_address_attribute.x_port);
     try std.testing.expectEqual(common.AddressFamilyType.ipv4, xor_mapped_address_attribute.x_family);
@@ -865,10 +865,10 @@ test "USERNAME deserialization" {
     };
 
     var stream = std.io.fixedBufferStream(&buffer);
-    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
-    var username_attribute = try common.Username.fromAttribute(attribute);
+    const username_attribute = try common.Username.fromAttribute(attribute);
 
     try std.testing.expectEqualStrings("ztun", username_attribute.value);
 }
@@ -916,7 +916,7 @@ test "USERHASH deserialization" {
     };
 
     var stream = std.io.fixedBufferStream(&buffer);
-    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     var userhash_attribute = try common.Userhash.fromAttribute(attribute);
@@ -979,7 +979,7 @@ test "MESSAGE-INTEGRITY deserialization" {
         0xa4,
     };
     var stream = std.io.fixedBufferStream(&buffer);
-    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const message_integrity_attribute = try common.MessageIntegrity.fromAttribute(attribute);
@@ -1041,7 +1041,7 @@ test "MESSAGE-INTEGRITY-SHA256 deserialization" {
         0xec,
     };
     var stream = std.io.fixedBufferStream(&buffer);
-    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const message_integrity_sha256_attribute = try common.MessageIntegritySha256.fromAttribute(attribute);
@@ -1063,7 +1063,7 @@ test "FINGERPRINT deserialization" {
         0x04,
     };
     var stream = std.io.fixedBufferStream(&buffer);
-    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const fingerprint_attribute = try common.Fingerprint.fromAttribute(attribute);
@@ -1086,7 +1086,7 @@ test "ERROR-CODE deserialization" {
     } ++ "reason" ++ [_]u8{ 0, 0 };
 
     var stream = std.io.fixedBufferStream(buffer);
-    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const error_code_attribute = try common.ErrorCode.fromAttribute(attribute);
@@ -1114,7 +1114,7 @@ test "REALM deserialization" {
         0,
     };
     var stream = std.io.fixedBufferStream(&buffer);
-    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const realm_attribute = try common.Realm.fromAttribute(attribute);
@@ -1141,7 +1141,7 @@ test "NONCE deserialization" {
         0,
     };
     var stream = std.io.fixedBufferStream(&buffer);
-    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const nonce_attribute = try common.Nonce.fromAttribute(attribute);
@@ -1168,7 +1168,7 @@ test "PASSWORD-ALGORITHMS deserialization" {
     };
 
     var stream = std.io.fixedBufferStream(&buffer);
-    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const password_algorithms_attribute = try common.PasswordAlgorithms.fromAttribute(attribute, std.testing.allocator);
@@ -1195,7 +1195,7 @@ test "PASSWORD-ALGORITHM deserialization" {
     };
 
     var stream = std.io.fixedBufferStream(&buffer);
-    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const password_algorithm_attribute = try common.PasswordAlgorithm.fromAttribute(attribute);
@@ -1220,7 +1220,7 @@ test "UNKNOWN-ATTRIBUTES deserialization" {
     };
 
     var stream = std.io.fixedBufferStream(&buffer);
-    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const unknown_attributes_attribute = try common.UnknownAttributes.fromAttribute(attribute, std.testing.allocator);
@@ -1250,7 +1250,7 @@ test "SOFTWARE deserialization" {
         @as(u8, 'e'),
     };
     var stream = std.io.fixedBufferStream(&buffer);
-    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const software_attribute = try common.Software.fromAttribute(attribute);
@@ -1274,7 +1274,7 @@ test "ALTERNATE-SERVER deserialization" {
         0,    1,
     };
     var stream = std.io.fixedBufferStream(&buffer);
-    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const alternate_server_attribute = try common.AlternateServer.fromAttribute(attribute);
@@ -1303,7 +1303,7 @@ test "ALTERNATE-DOMAIN deserialization" {
         0,
     };
     var stream = std.io.fixedBufferStream(&buffer);
-    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const alternate_domain_attribute = try common.AlternateDomain.fromAttribute(attribute);
@@ -1321,7 +1321,7 @@ test "PRIORITY deserialization" {
         0x03, 0x04,
     };
     var stream = std.io.fixedBufferStream(&buffer);
-    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const priority_attribute = try common.Priority.fromAttribute(attribute);
@@ -1336,7 +1336,7 @@ test "USE-CANDIDATE deserialization" {
         0x00, 0x00,
     };
     var stream = std.io.fixedBufferStream(&buffer);
-    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     _ = try common.UseCandidate.fromAttribute(attribute);
@@ -1354,7 +1354,7 @@ test "ICE-CONTROLLED deserialization" {
         0x07, 0x08,
     };
     var stream = std.io.fixedBufferStream(&buffer);
-    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const ice_controlled_attribute = try common.IceControlled.fromAttribute(attribute);
@@ -1374,7 +1374,7 @@ test "ICE-CONTROLLING deserialization" {
         0x07, 0x08,
     };
     var stream = std.io.fixedBufferStream(&buffer);
-    var attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const ice_controlling_attribute = try common.IceControlling.fromAttribute(attribute);

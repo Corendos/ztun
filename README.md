@@ -8,7 +8,7 @@
 - [License](#license)
 
 ## Supported zig version
-`0.12.0-dev.1388+d89266569`
+`0.12.0-dev.1768+39a966b0a`
 
 ## Features
 

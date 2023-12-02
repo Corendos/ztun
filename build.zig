@@ -3,27 +3,21 @@
 
 const std = @import("std");
 
-pub fn module(b: *std.Build) *std.Build.Module {
-    return b.createModule(std.Build.CreateModuleOptions{
-        .source_file = .{ .path = thisDir() ++ "/src/ztun.zig" },
-    });
-}
-
 pub fn build(b: *std.Build) void {
-    // Modules available to downstream dependencies
-    _ = b.addModule("ztun", .{
-        .source_file = .{ .path = thisDir() ++ "/src/ztun.zig" },
-    });
-
     // Standard release options allow the person running `zig build` to select
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
     const optimize = b.standardOptimizeOption(.{});
     const target = b.standardTargetOptions(.{});
 
+    // Modules available to downstream dependencies
+    _ = b.addModule("ztun", .{
+        .source_file = .{ .path = "/src/ztun.zig" },
+    });
+
     const install_tests = b.option(bool, "install_tests", "Install tests exe during install step") orelse false;
 
     const ztun_tests = b.addTest(.{
-        .root_source_file = std.Build.FileSource.relative("src/ztun.zig"),
+        .root_source_file = .{ .path = "src/ztun.zig" },
         .target = target,
         .optimize = optimize,
     });
@@ -32,8 +26,4 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run library tests");
     test_step.dependOn(&ztun_tests_run.step);
-}
-
-inline fn thisDir() []const u8 {
-    return comptime std.fs.path.dirname(@src().file) orelse ".";
 }

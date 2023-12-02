@@ -20,7 +20,7 @@ pub const ShortTermAuthentication = struct {
     /// Computes the authentication key corresponding to the stored parameters and tries to allocate the required.
     /// Returns the buffer containing the computed key.
     pub fn computeKeyAlloc(self: ShortTermAuthentication, allocator: std.mem.Allocator) ![]u8 {
-        var buffer = try allocator.alloc(u8, self.password.len * 2);
+        const buffer = try allocator.alloc(u8, self.password.len * 2);
         errdefer allocator.free(buffer);
         const bytes_written = try self.computeKey(buffer);
         return try allocator.realloc(buffer, bytes_written);
