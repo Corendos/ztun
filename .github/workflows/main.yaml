@@ -10,7 +10,7 @@ on:
 jobs:
   test-linux-x86_64:
     name: Test Linux x64
-    runs_on: ubuntu-latest
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v2
