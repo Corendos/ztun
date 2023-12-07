@@ -11,7 +11,7 @@ pub fn build(b: *std.Build) void {
 
     // Modules available to downstream dependencies
     _ = b.addModule("ztun", .{
-        .source_file = .{ .path = "/src/ztun.zig" },
+        .source_file = .{ .path = "src/ztun.zig" },
     });
 
     const install_tests = b.option(bool, "install_tests", "Install tests exe during install step") orelse false;
