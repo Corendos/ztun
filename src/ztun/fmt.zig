@@ -196,9 +196,9 @@ pub fn formatMessageImpl(message: ztun.Message, comptime fmt: []const u8, option
                         try writer.writeByteNTimes(' ', 24);
                         try writer.writeAll("Algorithm: ");
                         switch (algorithm.type) {
-                            @as(u16, ztun.attr.common.AlgorithmType.md5) => try writer.writeAll("md5\n"),
-                            @as(u16, ztun.attr.common.AlgorithmType.sha256) => try writer.writeAll("sha256\n"),
-                            else => try writer.print("0x{x:0>4}\n", .{algorithm.type}),
+                            .md5 => try writer.writeAll("md5\n"),
+                            .sha256 => try writer.writeAll("sha256\n"),
+                            _ => try writer.print("0x{x:0>4}\n", .{algorithm.type}),
                         }
                         try writer.writeByteNTimes(' ', 24);
                         try writer.print("Parameters: {any}\n", .{algorithm.parameters});
@@ -211,9 +211,9 @@ pub fn formatMessageImpl(message: ztun.Message, comptime fmt: []const u8, option
                     try writer.writeByteNTimes(' ', 16);
                     try writer.writeAll("Algorithm:  ");
                     switch (password_algorithm_attribute.algorithm.type) {
-                        @as(u16, ztun.attr.common.AlgorithmType.md5) => try writer.writeAll("md5\n"),
-                        @as(u16, ztun.attr.common.AlgorithmType.sha256) => try writer.writeAll("sha256\n"),
-                        else => try writer.print("0x{x:0>4}\n", .{password_algorithm_attribute.algorithm.type}),
+                        .md5 => try writer.writeAll("md5\n"),
+                        .sha256 => try writer.writeAll("sha256\n"),
+                        _ => try writer.print("0x{x:0>4}\n", .{password_algorithm_attribute.algorithm.type}),
                     }
                     try writer.writeByteNTimes(' ', 16);
                     try writer.print("Parameters: {any}\n", .{password_algorithm_attribute.algorithm.parameters});
