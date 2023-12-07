@@ -20,9 +20,9 @@ pub const Options = struct {
     /// The realm used in long-term authentication.
     realm: []const u8 = "default",
     /// The supported algorithms for long-term authentication.
-    algorithms: []const attr.common.Algorithm = &.{
-        .{ .type = attr.common.AlgorithmType.md5, .parameters = &.{} },
-        .{ .type = attr.common.AlgorithmType.sha256, .parameters = &.{} },
+    algorithms: []const ztun.auth.Algorithm = &.{
+        .{ .type = ztun.auth.AlgorithmType.md5, .parameters = &.{} },
+        .{ .type = ztun.auth.AlgorithmType.sha256, .parameters = &.{} },
     },
 };
 
@@ -50,8 +50,10 @@ const Address = union(enum) {
 options: Options,
 /// Allocator used by the server internally.
 allocator: std.mem.Allocator,
-/// Stores the registered users.
-user_map: std.StringHashMap(ztun.auth.Authentication),
+/// Stores the registered users using the Short-Term authentication.
+short_term_users: std.StringHashMap(ztun.auth.ShortTermAuthenticationParameters),
+/// Stores the registered users using the Long-Term authentication.
+long_term_users: std.StringHashMap(ztun.auth.LongTermAuthenticationParameters),
 /// Stores the nonce for known clients.
 client_map: std.AutoHashMap(Address, ClientData),
 
@@ -142,26 +144,28 @@ pub fn init(allocator: std.mem.Allocator, options: Options) Self {
     return Self{
         .options = options,
         .allocator = allocator,
-        .user_map = std.StringHashMap(ztun.auth.Authentication).init(allocator),
+        .short_term_users = std.StringHashMap(ztun.auth.ShortTermAuthenticationParameters).init(allocator),
+        .long_term_users = std.StringHashMap(ztun.auth.LongTermAuthenticationParameters).init(allocator),
         .client_map = std.AutoHashMap(Address, ClientData).init(allocator),
     };
 }
 
 /// Deinitializes the server.
 pub fn deinit(self: *Self) void {
-    var user_iterator = self.user_map.iterator();
-    while (user_iterator.next()) |entry| switch (entry.value_ptr.*) {
-        .none => {},
-        .short_term => |value| {
-            self.allocator.free(value.password);
-        },
-        .long_term => |value| {
-            self.allocator.free(value.username);
-            self.allocator.free(value.password);
-            self.allocator.free(value.realm);
-        },
-    };
-    self.user_map.deinit();
+    var short_term_user_iterator = self.short_term_users.iterator();
+    while (short_term_user_iterator.next()) |entry| {
+        self.allocator.free(entry.value_ptr.password);
+    }
+    self.short_term_users.deinit();
+
+    var long_term_user_iterator = self.long_term_users.iterator();
+    while (long_term_user_iterator.next()) |entry| {
+        self.allocator.free(entry.value_ptr.username);
+        self.allocator.free(entry.value_ptr.password);
+        self.allocator.free(entry.value_ptr.realm);
+    }
+    self.long_term_users.deinit();
+
     self.client_map.deinit();
 }
 
@@ -394,19 +398,19 @@ fn authenticateShortTerm(self: *Self, context: *MessageContext) ShortTermAuthent
     const message_integrity_type: ztun.MessageIntegrityType = if (message_attribute_details.message_integrity_sha256_index != null) .sha256 else .classic;
     const message_integrity_attribute_index = message_attribute_details.message_integrity_sha256_index orelse message_attribute_details.message_integrity_index orelse unreachable;
     const username = context.message.attributes[message_attribute_details.username_index.?].data;
-    const authentication = self.user_map.get(username) orelse return error.UnknownUser;
+    const authentication_parameters = self.short_term_users.get(username) orelse return error.UnknownUser;
 
-    const key = authentication.computeKeyAlloc(context.arena) catch return error.Unrecoverable;
+    const key = authentication_parameters.computeKeyAlloc(context.arena) catch return error.Unrecoverable;
 
     const result = context.message.checkMessageIntegrity(context.arena, message_integrity_type, message_integrity_attribute_index, key) catch return error.Unrecoverable;
 
     if (!result) return error.InvalidMessageIntegrity;
 
-    context.authentication = authentication;
+    context.short_term_authentication_parameters = authentication_parameters;
 }
 
 /// Checks that the given algorithms match the ones provided by the server.
-fn hasSamePasswordAlgorithms(self: Self, algorithms: []const attr.common.Algorithm) bool {
+fn hasSamePasswordAlgorithms(self: Self, algorithms: []const ztun.auth.Algorithm) bool {
     if (algorithms.len != self.options.algorithms.len) return false;
 
     // TODO(Corendos,@Improvement): Handle cases where the algorithms are shuffled.
@@ -460,13 +464,11 @@ fn authenticateLongTerm(self: Self, context: *MessageContext) LongTermAuthentica
         try self.checkPasswordAlgorithms(context);
     }
     const username = context.message.attributes[message_attribute_details.username_index.?].data;
-    const authentication = self.user_map.get(username) orelse {
-        return error.UnknownUser;
-    };
+    const authentication_parameters = self.long_term_users.get(username) orelse return error.UnknownUser;
 
     // TODO(Corendos): Handle USERHASH if present.
-
-    const key = authentication.computeKeyAlloc(context.arena) catch return error.Unrecoverable;
+    const algorithm = context.algorithm orelse ztun.auth.Algorithm.default(.md5);
+    const key = authentication_parameters.computeKeyAlloc(context.arena, algorithm) catch return error.Unrecoverable;
 
     const message_integrity_type: ztun.MessageIntegrityType = if (message_attribute_details.message_integrity_sha256_index != null) .sha256 else .classic;
     const message_integrity_attribute_index = message_attribute_details.message_integrity_sha256_index orelse message_attribute_details.message_integrity_index orelse unreachable;
@@ -480,7 +482,7 @@ fn authenticateLongTerm(self: Self, context: *MessageContext) LongTermAuthentica
         return error.StaleNonce;
     }
 
-    context.authentication = authentication;
+    context.long_term_authentication_parameters = authentication_parameters;
 }
 
 /// Options used when getting/updating a Nonce.
@@ -543,11 +545,14 @@ const MessageContext = struct {
     arena: std.mem.Allocator,
     /// Details concerning the attributes of the message.
     message_attribute_details: ?MessageAttributeDetails = null,
-    /// The authentication parameters.
+    /// The Short-Term authentication parameters.
     /// This is set if the user is authenticated.
-    authentication: ?ztun.auth.Authentication = null,
+    short_term_authentication_parameters: ?ztun.auth.ShortTermAuthenticationParameters = null,
+    /// The Long-Term authentication parameters.
+    /// This is set if the user is authenticated.
+    long_term_authentication_parameters: ?ztun.auth.LongTermAuthenticationParameters = null,
     /// The password algorithm to use if it has been specified using attributes.
-    algorithm: ?ztun.attr.common.Algorithm = null,
+    algorithm: ?ztun.auth.Algorithm = null,
 };
 
 /// Make a
@@ -631,7 +636,7 @@ pub fn handleRequest(self: *Self, allocator: std.mem.Allocator, context: *Messag
         .none => {},
         .short_term => {
             const message_attribute_details = context.message_attribute_details.?;
-            const key = try context.authentication.?.computeKeyAlloc(context.arena);
+            const key = try context.short_term_authentication_parameters.?.computeKeyAlloc(context.arena);
 
             if (message_attribute_details.message_integrity_sha256_index != null) {
                 message_builder.addMessageIntegritySha256(key);
@@ -641,13 +646,10 @@ pub fn handleRequest(self: *Self, allocator: std.mem.Allocator, context: *Messag
         },
         .long_term => {
             if (context.algorithm) |algorithm| {
-                // TODO(Corendos): use the algorithm to compute the correct key.
-                _ = algorithm;
-
-                const key = try context.authentication.?.long_term.computeKeyAlloc(context.arena);
+                const key = try context.long_term_authentication_parameters.?.computeKeyAlloc(context.arena, algorithm);
                 message_builder.addMessageIntegritySha256(key);
             } else {
-                const key = try context.authentication.?.long_term.computeKeyAlloc(context.arena);
+                const key = try context.long_term_authentication_parameters.?.computeKeyAlloc(context.arena, ztun.auth.Algorithm.default(.md5));
                 message_builder.addMessageIntegrity(key);
             }
         },
@@ -707,32 +709,30 @@ pub fn handleMessage(self: *Self, allocator: std.mem.Allocator, message: ztun.Me
     };
 }
 
-/// Registers a user on the Server.
-pub fn registerUser(self: *Self, username: []const u8, authentication: ztun.auth.Authentication) !void {
-    if (authentication == .none) return;
+/// Registers a Short-Term user to the Server.
+pub fn registerShortTermUser(self: *Self, username: []const u8, password: []const u8) !void {
+    const gop = try self.short_term_users.getOrPut(username);
+    if (gop.found_existing) {
+        self.allocator.free(gop.value_ptr.password);
+    }
 
-    const gop = try self.user_map.getOrPut(username);
-    if (gop.found_existing) switch (gop.value_ptr.*) {
-        .none => {},
-        .short_term => |value| {
-            self.allocator.free(value.password);
-        },
-        .long_term => |value| {
-            self.allocator.free(value.username);
-            self.allocator.free(value.password);
-            self.allocator.free(value.realm);
-        },
+    gop.value_ptr.* = ztun.auth.ShortTermAuthenticationParameters{
+        .password = try self.allocator.dupe(u8, password),
     };
-    gop.value_ptr.* = switch (authentication) {
-        .none => @unionInit(ztun.auth.Authentication, "none", .{}),
-        .short_term => |value| @unionInit(ztun.auth.Authentication, "short_term", .{
-            .password = try self.allocator.dupe(u8, value.password),
-        }),
-        .long_term => |value| @unionInit(ztun.auth.Authentication, "long_term", .{
-            .username = try self.allocator.dupe(u8, value.username),
-            .password = try self.allocator.dupe(u8, value.password),
-            .realm = try self.allocator.dupe(u8, value.realm),
-        }),
+}
+
+/// Registers a Long-Term user to the Server.
+pub fn registerLongTermUser(self: *Self, username: []const u8, password: []const u8) !void {
+    const gop = try self.long_term_users.getOrPut(username);
+    if (gop.found_existing) {
+        self.allocator.free(gop.value_ptr.username);
+        self.allocator.free(gop.value_ptr.password);
+        self.allocator.free(gop.value_ptr.realm);
+    }
+    gop.value_ptr.* = ztun.auth.LongTermAuthenticationParameters{
+        .username = try self.allocator.dupe(u8, username),
+        .password = try self.allocator.dupe(u8, password),
+        .realm = try self.allocator.dupe(u8, self.options.realm),
     };
 }
 
@@ -776,9 +776,7 @@ test "Short Term Authentication: missing MESSAGE-INTEGRITY/MESSAGE-INTEGRITY-SHA
     var server = Self.init(std.testing.allocator, Options{ .authentication_type = .short_term });
     defer server.deinit();
 
-    const authentication = ztun.auth.Authentication{ .short_term = .{ .password = "password" } };
-
-    try server.registerUser("corendos", authentication);
+    try server.registerShortTermUser("corendos", "password");
 
     const message = msg: {
         var builder = ztun.MessageBuilder.init(std.testing.allocator);
@@ -807,9 +805,9 @@ test "Short Term Authentication: missing USERNAME" {
     var server = Self.init(std.testing.allocator, Options{ .authentication_type = .short_term });
     defer server.deinit();
 
-    const authentication = ztun.auth.Authentication{ .short_term = .{ .password = "password" } };
+    const authentication_parameters = ztun.auth.ShortTermAuthenticationParameters{ .password = "password" };
 
-    try server.registerUser("corendos", authentication);
+    try server.registerShortTermUser("corendos", authentication_parameters.password);
 
     const message = msg: {
         var builder = ztun.MessageBuilder.init(std.testing.allocator);
@@ -819,7 +817,7 @@ test "Short Term Authentication: missing USERNAME" {
         builder.setMethod(.binding);
         builder.transactionId(0x0102030405060708090A0B);
 
-        const key = try authentication.computeKeyAlloc(std.testing.allocator);
+        const key = try authentication_parameters.computeKeyAlloc(std.testing.allocator);
         defer std.testing.allocator.free(key);
 
         builder.addMessageIntegrity(key);
@@ -844,9 +842,9 @@ test "Short Term Authentication: unknown USERNAME" {
     var server = Self.init(std.testing.allocator, Options{ .authentication_type = .short_term });
     defer server.deinit();
 
-    const authentication = ztun.auth.Authentication{ .short_term = .{ .password = "password" } };
+    const authentication_parameters = ztun.auth.ShortTermAuthenticationParameters{ .password = "password" };
 
-    try server.registerUser("corendos", authentication);
+    try server.registerShortTermUser("corendos", authentication_parameters.password);
 
     const message = msg: {
         var builder = ztun.MessageBuilder.init(std.testing.allocator);
@@ -860,7 +858,7 @@ test "Short Term Authentication: unknown USERNAME" {
         errdefer std.testing.allocator.free(username_attribute.data);
         try builder.addAttribute(username_attribute);
 
-        const key = try authentication.computeKeyAlloc(std.testing.allocator);
+        const key = try authentication_parameters.computeKeyAlloc(std.testing.allocator);
         defer std.testing.allocator.free(key);
 
         builder.addMessageIntegrity(key);
@@ -885,9 +883,9 @@ test "Short Term Authentication: wrong MESSAGE-INTEGRITY" {
     var server = Self.init(std.testing.allocator, Options{ .authentication_type = .short_term });
     defer server.deinit();
 
-    const authentication = ztun.auth.Authentication{ .short_term = .{ .password = "password" } };
+    const authentication_parameters = ztun.auth.ShortTermAuthenticationParameters{ .password = "password" };
 
-    try server.registerUser("corendos", authentication);
+    try server.registerShortTermUser("corendos", authentication_parameters.password);
 
     const message = msg: {
         var builder = ztun.MessageBuilder.init(std.testing.allocator);
@@ -925,8 +923,9 @@ test "Long Term Authentication: missing MESSAGE-INTEGRITY/MESSAGE-INTEGRITY-SHA2
     var server = Self.init(std.testing.allocator, Options{ .authentication_type = .long_term });
     defer server.deinit();
 
-    const authentication = ztun.auth.Authentication{ .long_term = .{ .username = "corendos", .password = "password", .realm = "default" } };
-    try server.registerUser("corendos", authentication);
+    const authentication_parameters = ztun.auth.LongTermAuthenticationParameters{ .username = "corendos", .password = "password", .realm = "default" };
+
+    try server.registerLongTermUser("corendos", authentication_parameters.password);
 
     const message = msg: {
         var builder = ztun.MessageBuilder.init(std.testing.allocator);
@@ -961,9 +960,9 @@ test "Long Term Authentication: missing USERNAME" {
     var server = Self.init(std.testing.allocator, Options{ .authentication_type = .long_term });
     defer server.deinit();
 
-    const authentication = ztun.auth.Authentication{ .long_term = .{ .username = "corendos", .password = "password", .realm = "default" } };
+    const authentication_parameters = ztun.auth.LongTermAuthenticationParameters{ .username = "corendos", .password = "password", .realm = "default" };
 
-    try server.registerUser("corendos", authentication);
+    try server.registerLongTermUser("corendos", authentication_parameters.password);
 
     const message = msg: {
         var builder = ztun.MessageBuilder.init(std.testing.allocator);
@@ -973,7 +972,7 @@ test "Long Term Authentication: missing USERNAME" {
         builder.setMethod(.binding);
         builder.transactionId(0x0102030405060708090A0B);
 
-        const key = try authentication.computeKeyAlloc(std.testing.allocator);
+        const key = try authentication_parameters.computeKeyAlloc(std.testing.allocator, ztun.auth.Algorithm.default(.md5));
         defer std.testing.allocator.free(key);
 
         builder.addMessageIntegrity(key);
@@ -1001,9 +1000,9 @@ test "Long Term Authentication: missing REALM" {
     var server = Self.init(std.testing.allocator, Options{ .authentication_type = .long_term });
     defer server.deinit();
 
-    const authentication = ztun.auth.Authentication{ .long_term = .{ .username = "corendos", .password = "password", .realm = "default" } };
+    const authentication_parameters = ztun.auth.LongTermAuthenticationParameters{ .username = "corendos", .password = "password", .realm = "default" };
 
-    try server.registerUser("corendos", authentication);
+    try server.registerLongTermUser("corendos", authentication_parameters.password);
 
     const message = msg: {
         var builder = ztun.MessageBuilder.init(std.testing.allocator);
@@ -1017,7 +1016,7 @@ test "Long Term Authentication: missing REALM" {
         errdefer std.testing.allocator.free(username_attribute.data);
         try builder.addAttribute(username_attribute);
 
-        const key = try authentication.computeKeyAlloc(std.testing.allocator);
+        const key = try authentication_parameters.computeKeyAlloc(std.testing.allocator, ztun.auth.Algorithm.default(.md5));
         defer std.testing.allocator.free(key);
 
         builder.addMessageIntegrity(key);
@@ -1045,9 +1044,9 @@ test "Long Term Authentication: missing NONCE" {
     var server = Self.init(std.testing.allocator, Options{ .authentication_type = .long_term });
     defer server.deinit();
 
-    const authentication = ztun.auth.Authentication{ .long_term = .{ .username = "corendos", .password = "password", .realm = "default" } };
+    const authentication_parameters = ztun.auth.LongTermAuthenticationParameters{ .username = "corendos", .password = "password", .realm = "default" };
 
-    try server.registerUser("corendos", authentication);
+    try server.registerLongTermUser("corendos", authentication_parameters.password);
 
     const message = msg: {
         var builder = ztun.MessageBuilder.init(std.testing.allocator);
@@ -1065,7 +1064,7 @@ test "Long Term Authentication: missing NONCE" {
         errdefer std.testing.allocator.free(realm_attribute.data);
         try builder.addAttribute(realm_attribute);
 
-        const key = try authentication.computeKeyAlloc(std.testing.allocator);
+        const key = try authentication_parameters.computeKeyAlloc(std.testing.allocator, ztun.auth.Algorithm.default(.md5));
         defer std.testing.allocator.free(key);
 
         builder.addMessageIntegrity(key);
@@ -1093,8 +1092,9 @@ test "Long Term Authentication: invalid USERNAME" {
     var server = Self.init(std.testing.allocator, Options{ .authentication_type = .long_term });
     defer server.deinit();
 
-    const authentication = ztun.auth.Authentication{ .long_term = .{ .username = "corendos", .password = "password", .realm = "default" } };
-    try server.registerUser("corendos", authentication);
+    const authentication_parameters = ztun.auth.LongTermAuthenticationParameters{ .username = "corendos", .password = "password", .realm = "default" };
+
+    try server.registerLongTermUser("corendos", authentication_parameters.password);
 
     const source = try std.net.Address.parseIp4("192.168.1.18", 18232);
 
@@ -1119,7 +1119,7 @@ test "Long Term Authentication: invalid USERNAME" {
         errdefer std.testing.allocator.free(nonce_attribute.data);
         try builder.addAttribute(nonce_attribute);
 
-        const key = try authentication.computeKeyAlloc(std.testing.allocator);
+        const key = try authentication_parameters.computeKeyAlloc(std.testing.allocator, ztun.auth.Algorithm.default(.md5));
         defer std.testing.allocator.free(key);
         builder.addMessageIntegrity(key);
 
@@ -1150,8 +1150,9 @@ test "Long Term Authentication: invalid MESSAGE-INTEGRITY" {
     var server = Self.init(std.testing.allocator, Options{ .authentication_type = .long_term });
     defer server.deinit();
 
-    const authentication = ztun.auth.Authentication{ .long_term = .{ .username = "corendos", .password = "password", .realm = "default" } };
-    try server.registerUser("corendos", authentication);
+    const authentication_parameters = ztun.auth.LongTermAuthenticationParameters{ .username = "corendos", .password = "password", .realm = "default" };
+
+    try server.registerLongTermUser("corendos", authentication_parameters.password);
 
     const source = try std.net.Address.parseIp4("192.168.1.18", 18232);
 
@@ -1207,8 +1208,9 @@ test "Long Term Authentication: stale nonce" {
     var server = Self.init(std.testing.allocator, Options{ .authentication_type = .long_term });
     defer server.deinit();
 
-    const authentication = ztun.auth.Authentication{ .long_term = .{ .username = "corendos", .password = "password", .realm = "default" } };
-    try server.registerUser("corendos", authentication);
+    const authentication_parameters = ztun.auth.LongTermAuthenticationParameters{ .username = "corendos", .password = "password", .realm = "default" };
+
+    try server.registerLongTermUser("corendos", authentication_parameters.password);
 
     const source = try std.net.Address.parseIp4("192.168.1.18", 18232);
 
@@ -1233,7 +1235,7 @@ test "Long Term Authentication: stale nonce" {
         errdefer std.testing.allocator.free(nonce_attribute.data);
         try builder.addAttribute(nonce_attribute);
 
-        const key = try authentication.computeKeyAlloc(std.testing.allocator);
+        const key = try authentication_parameters.computeKeyAlloc(std.testing.allocator, ztun.auth.Algorithm.default(.md5));
         defer std.testing.allocator.free(key);
         builder.addMessageIntegrity(key);
 

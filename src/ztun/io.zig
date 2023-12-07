@@ -70,6 +70,30 @@ pub const Md5Stream = struct {
     }
 };
 
+/// This object is a stream that computes the SHA256 checksum of what is written to it.
+pub const Sha256Stream = struct {
+    state: std.crypto.hash.sha2.Sha256 = std.crypto.hash.sha2.Sha256.init(.{}),
+
+    pub const Context = struct {
+        state: *std.crypto.hash.sha2.Sha256,
+    };
+
+    pub const Writer = std.io.Writer(Context, error{}, write);
+
+    pub fn init() Sha256Stream {
+        return Sha256Stream{ .state = std.crypto.hash.sha2.Sha256.init(.{}) };
+    }
+
+    fn write(context: Context, bytes: []const u8) error{}!usize {
+        context.state.update(bytes);
+        return bytes.len;
+    }
+
+    pub fn writer(self: *Sha256Stream) Writer {
+        return Writer{ .context = .{ .state = &self.state } };
+    }
+};
+
 test "write all aligned" {
     const str = [_]u8{ 1, 2, 3 };
     var buffer: [128]u8 = undefined;

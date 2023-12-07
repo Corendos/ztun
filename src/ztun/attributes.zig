@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const io = @import("io.zig");
+const auth = @import("authentication.zig");
 
 const magic_cookie = @import("constants.zig").magic_cookie;
 
@@ -487,19 +488,9 @@ pub const common = struct {
         }
     };
 
-    pub const AlgorithmType = struct {
-        pub const md5 = 0x0001;
-        pub const sha256 = 0x0002;
-    };
-
-    pub const Algorithm = struct {
-        type: u16,
-        parameters: []const u8,
-    };
-
     /// Represents the PASSWORD-ALGORITHMS attribute.
     pub const PasswordAlgorithms = struct {
-        algorithms: []const Algorithm,
+        algorithms: []const auth.Algorithm,
 
         pub fn fromAttribute(attribute: Attribute, allocator: std.mem.Allocator) ConversionError!PasswordAlgorithms {
             if (attribute.type != Type.password_algorithms) return error.InvalidAttribute;
@@ -515,15 +506,15 @@ pub const common = struct {
                 reader.skipBytes(aligned_length, .{}) catch return error.InvalidAttribute;
             }
 
-            const algorithms = try allocator.alloc(Algorithm, algorithms_count);
+            const algorithms = try allocator.alloc(auth.Algorithm, algorithms_count);
             errdefer allocator.free(algorithms);
 
             stream.reset();
             for (algorithms) |*algorithm| {
-                const @"type" = reader.readInt(u16, .big) catch return error.InvalidAttribute;
+                const raw_type = reader.readInt(u16, .big) catch return error.InvalidAttribute;
                 const length = reader.readInt(u16, .big) catch return error.InvalidAttribute;
                 const aligned_length = std.mem.alignForward(usize, length, 4);
-                algorithm.type = @"type";
+                algorithm.type = @enumFromInt(raw_type);
                 algorithm.parameters = stream.buffer[stream.pos .. stream.pos + length];
                 reader.skipBytes(aligned_length, .{}) catch return error.InvalidAttribute;
             }
@@ -543,7 +534,7 @@ pub const common = struct {
             var writer = stream.writer();
 
             for (self.algorithms) |algorithm| {
-                writer.writeInt(u16, algorithm.type, .big) catch unreachable;
+                writer.writeInt(u16, @intFromEnum(algorithm.type), .big) catch unreachable;
                 writer.writeInt(u16, @as(u16, @intCast(algorithm.parameters.len)), .big) catch unreachable;
                 io.writeAllAligned(algorithm.parameters, 4, writer) catch unreachable;
             }
@@ -554,7 +545,7 @@ pub const common = struct {
 
     /// Represents the PASSWORD-ALGORITHM attribute.
     pub const PasswordAlgorithm = struct {
-        algorithm: Algorithm,
+        algorithm: auth.Algorithm,
 
         pub fn fromAttribute(attribute: Attribute) ConversionError!PasswordAlgorithm {
             if (attribute.type != Type.password_algorithm) return error.InvalidAttribute;
@@ -562,11 +553,11 @@ pub const common = struct {
             var stream = std.io.fixedBufferStream(attribute.data);
             var reader = stream.reader();
 
-            const @"type" = reader.readInt(u16, .big) catch return error.InvalidAttribute;
+            const raw_type = reader.readInt(u16, .big) catch return error.InvalidAttribute;
             const length = reader.readInt(u16, .big) catch return error.InvalidAttribute;
             const aligned_length = std.mem.alignForward(usize, length, 4);
-            const algorithm = Algorithm{
-                .type = @"type",
+            const algorithm = auth.Algorithm{
+                .type = @enumFromInt(raw_type),
                 .parameters = stream.buffer[stream.pos .. stream.pos + length],
             };
             reader.skipBytes(aligned_length, .{}) catch return error.InvalidAttribute;
@@ -581,7 +572,7 @@ pub const common = struct {
             var stream = std.io.fixedBufferStream(data);
             var writer = stream.writer();
 
-            writer.writeInt(u16, self.algorithm.type, .big) catch unreachable;
+            writer.writeInt(u16, @intFromEnum(self.algorithm.type), .big) catch unreachable;
             writer.writeInt(u16, @as(u16, @intCast(self.algorithm.parameters.len)), .big) catch unreachable;
             io.writeAllAligned(self.algorithm.parameters, 4, writer) catch unreachable;
 
@@ -1175,9 +1166,9 @@ test "PASSWORD-ALGORITHMS deserialization" {
     defer std.testing.allocator.free(password_algorithms_attribute.algorithms);
 
     try std.testing.expectEqual(@as(usize, 2), password_algorithms_attribute.algorithms.len);
-    try std.testing.expectEqual(@as(u16, common.AlgorithmType.md5), password_algorithms_attribute.algorithms[0].type);
+    try std.testing.expectEqual(auth.AlgorithmType.md5, password_algorithms_attribute.algorithms[0].type);
     try std.testing.expectEqualSlices(u8, &.{}, password_algorithms_attribute.algorithms[0].parameters);
-    try std.testing.expectEqual(@as(u16, common.AlgorithmType.sha256), password_algorithms_attribute.algorithms[1].type);
+    try std.testing.expectEqual(auth.AlgorithmType.sha256, password_algorithms_attribute.algorithms[1].type);
     try std.testing.expectEqualSlices(u8, &.{}, password_algorithms_attribute.algorithms[1].parameters);
 }
 
@@ -1200,7 +1191,7 @@ test "PASSWORD-ALGORITHM deserialization" {
 
     const password_algorithm_attribute = try common.PasswordAlgorithm.fromAttribute(attribute);
 
-    try std.testing.expectEqual(@as(u16, common.AlgorithmType.md5), password_algorithm_attribute.algorithm.type);
+    try std.testing.expectEqual(auth.AlgorithmType.md5, password_algorithm_attribute.algorithm.type);
     try std.testing.expectEqualSlices(u8, &.{}, password_algorithm_attribute.algorithm.parameters);
 }
 
