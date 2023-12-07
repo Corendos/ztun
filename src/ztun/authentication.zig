@@ -117,14 +117,14 @@ test "compute short-term authentication key" {
 }
 
 test "compute long-term authentication key" {
-    const username = "username";
-    const password = "password";
+    const username = "user";
+    const password = "pass";
     const realm = "realm";
     const authentication = LongTermAuthentication{ .username = username, .password = password, .realm = realm };
     const key = try authentication.computeKeyAlloc(std.testing.allocator);
     defer std.testing.allocator.free(key);
 
-    const true_key = [_]u8{ 0x66, 0x99, 0x93, 0x43, 0x28, 0x1b, 0x26, 0x24, 0x58, 0x5f, 0xd5, 0x8c, 0xc9, 0xd3, 0x6d, 0xfc };
+    const true_key = [_]u8{ 0x84, 0x93, 0xFB, 0xC5, 0x3B, 0xA5, 0x82, 0xFB, 0x4C, 0x04, 0x4C, 0x45, 0x6B, 0xDC, 0x40, 0xEB };
 
     try std.testing.expectEqualSlices(u8, &true_key, key);
 }

@@ -76,7 +76,7 @@ fn writeMessageHeader(message: ztun.Message, indentation: usize, writer: anytype
     try writer.writeByteNTimes(' ', indentation + 4);
     try writer.print("Method:         {s}\n", .{@tagName(message.type.method)});
     try writer.writeByteNTimes(' ', indentation + 4);
-    try writer.print("Transaction ID: {x}\n", .{message.transaction_id});
+    try writer.print("Transaction ID: {x:0>24}\n", .{message.transaction_id});
     try writer.writeByteNTimes(' ', indentation + 4);
     try writer.writeAll("Attributes:\n");
 }

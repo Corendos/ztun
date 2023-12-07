@@ -10,6 +10,9 @@ pub const fingerprint_magic = 0x5354554e;
 /// Size in bytes of the header of a STUN message.
 pub const message_header_length = 20;
 
+/// The start of the nonce cookie that is used to fill the NONCE attribute.
+pub const nonce_cookie_start = "obMatJos2";
+
 /// Current version of the library.
 pub const version = @import("std").SemanticVersion{
     .major = 0,

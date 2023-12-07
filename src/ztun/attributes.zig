@@ -499,7 +499,7 @@ pub const common = struct {
 
     /// Represents the PASSWORD-ALGORITHMS attribute.
     pub const PasswordAlgorithms = struct {
-        algorithms: []Algorithm,
+        algorithms: []const Algorithm,
 
         pub fn fromAttribute(attribute: Attribute, allocator: std.mem.Allocator) ConversionError!PasswordAlgorithms {
             if (attribute.type != Type.password_algorithms) return error.InvalidAttribute;
