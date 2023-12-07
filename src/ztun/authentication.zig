@@ -18,7 +18,7 @@ pub const ShortTermAuthenticationParameters = struct {
         return stream.getWritten().len;
     }
 
-    /// Computes the authentication key corresponding to the stored parameters and tries to allocate the required.
+    /// Computes the authentication key corresponding to the stored parameters and tries to allocate the required buffer.
     /// Returns the buffer containing the computed key.
     pub fn computeKeyAlloc(self: ShortTermAuthenticationParameters, allocator: std.mem.Allocator) ![]u8 {
         const buffer = try allocator.alloc(u8, self.password.len * 2);
@@ -89,7 +89,7 @@ pub const LongTermAuthenticationParameters = struct {
         };
     }
 
-    /// Computes the authentication key corresponding to the stored parameters and tries to allocate the required.
+    /// Computes the authentication key corresponding to the stored parameters and tries to allocate the required buffer.
     /// Returns the buffer containing the computed key.
     pub fn computeKeyAlloc(self: LongTermAuthenticationParameters, allocator: std.mem.Allocator, algorithm: Algorithm) ![]u8 {
         const alloc_size = switch (algorithm.type) {

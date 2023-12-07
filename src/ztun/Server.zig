@@ -19,6 +19,8 @@ pub const Options = struct {
     authentication_type: ztun.auth.AuthenticationType = .none,
     /// The realm used in long-term authentication.
     realm: []const u8 = "default",
+    /// Does the Server support anonymous username.
+    use_username_anonymity: bool = false,
     /// The supported algorithms for long-term authentication.
     algorithms: []const ztun.auth.Algorithm = &.{
         .{ .type = ztun.auth.AlgorithmType.md5, .parameters = &.{} },
@@ -54,6 +56,8 @@ allocator: std.mem.Allocator,
 short_term_users: std.StringHashMap(ztun.auth.ShortTermAuthenticationParameters),
 /// Stores the registered users using the Long-Term authentication.
 long_term_users: std.StringHashMap(ztun.auth.LongTermAuthenticationParameters),
+/// Stores the association between userhash and username.
+userhash_map: std.StringHashMap([]const u8),
 /// Stores the nonce for known clients.
 client_map: std.AutoHashMap(Address, ClientData),
 
@@ -69,6 +73,11 @@ const NonceData = packed struct {
     id: u64,
     // Absolute time until which the nonce is valid,
     validity: u64,
+
+    /// Returns true of the two struct are equal.
+    pub fn eql(self: NonceData, other: NonceData) bool {
+        return self.id == other.id and self.validity == other.validity;
+    }
 };
 
 /// Represents the security features that are encoded in the Nonce.
@@ -93,6 +102,11 @@ const SecurityFeatures = packed struct {
         try std.base64.standard.Decoder.decode(std.mem.asBytes(&result)[0..3], buffer[0..4]);
         return result;
     }
+
+    /// Returns true of the two struct are equal.
+    pub fn eql(self: SecurityFeatures, other: SecurityFeatures) bool {
+        return self.password_algorithms == other.password_algorithms and self.username_anonymity == other.username_anonymity;
+    }
 };
 
 /// Represents the Nonce value.
@@ -103,6 +117,11 @@ const Nonce = struct {
     data: NonceData,
 
     pub const size = 13 + @sizeOf(NonceData);
+
+    /// Returns true of the two struct are equal.
+    pub fn eql(self: Nonce, other: Nonce) bool {
+        return self.security_features.eql(other.security_features) and self.data.eql(other.data);
+    }
 };
 
 /// Parses the nonce from the given buffer.
@@ -146,6 +165,7 @@ pub fn init(allocator: std.mem.Allocator, options: Options) Self {
         .allocator = allocator,
         .short_term_users = std.StringHashMap(ztun.auth.ShortTermAuthenticationParameters).init(allocator),
         .long_term_users = std.StringHashMap(ztun.auth.LongTermAuthenticationParameters).init(allocator),
+        .userhash_map = std.StringHashMap([]const u8).init(allocator),
         .client_map = std.AutoHashMap(Address, ClientData).init(allocator),
     };
 }
@@ -154,17 +174,26 @@ pub fn init(allocator: std.mem.Allocator, options: Options) Self {
 pub fn deinit(self: *Self) void {
     var short_term_user_iterator = self.short_term_users.iterator();
     while (short_term_user_iterator.next()) |entry| {
+        self.allocator.free(entry.key_ptr.*);
         self.allocator.free(entry.value_ptr.password);
     }
     self.short_term_users.deinit();
 
     var long_term_user_iterator = self.long_term_users.iterator();
     while (long_term_user_iterator.next()) |entry| {
+        self.allocator.free(entry.key_ptr.*);
         self.allocator.free(entry.value_ptr.username);
         self.allocator.free(entry.value_ptr.password);
         self.allocator.free(entry.value_ptr.realm);
     }
     self.long_term_users.deinit();
+
+    var userhash_map_it = self.userhash_map.iterator();
+    while (userhash_map_it.next()) |entry| {
+        self.allocator.free(entry.key_ptr.*);
+        self.allocator.free(entry.value_ptr.*);
+    }
+    self.userhash_map.deinit();
 
     self.client_map.deinit();
 }
@@ -251,7 +280,10 @@ fn makeUnauthenticatedMessage(self: *Self, allocator: std.mem.Allocator, context
     }
 
     if (options.add_nonce) {
-        const nonce = try self.getOrUpdateNonce(context.source, .{ .set_password_algoritms_feature = options.add_password_algorithms });
+        const nonce = try self.getOrUpdateNonce(context.source, .{
+            .set_password_algoritms_feature = options.add_password_algorithms,
+            .set_username_anonymity_feature = self.options.use_username_anonymity,
+        });
         const encoded_nonce = encodeNonce(nonce);
 
         const nonce_attribute = try (attr.common.Nonce{ .value = encoded_nonce[0..] }).toAttribute(allocator);
@@ -309,7 +341,10 @@ fn makeStaleNonceMessage(self: *Self, allocator: std.mem.Allocator, context: *Me
     errdefer allocator.free(realm_attribute.data);
     try message_builder.addAttribute(realm_attribute);
 
-    const nonce = try self.getOrUpdateNonce(context.source, .{ .set_password_algoritms_feature = true });
+    const nonce = try self.getOrUpdateNonce(context.source, .{
+        .set_password_algoritms_feature = true,
+        .set_username_anonymity_feature = self.options.use_username_anonymity,
+    });
     const encoded_nonce = encodeNonce(nonce);
 
     const nonce_attribute = try (attr.common.Nonce{ .value = encoded_nonce[0..] }).toAttribute(allocator);
@@ -443,6 +478,11 @@ fn checkPasswordAlgorithms(self: Self, context: *MessageContext) LongTermAuthent
     } else return error.InvalidPasswordAlgorithm;
 }
 
+fn findFromUserhash(self: Self, userhash: []const u8) ?ztun.auth.LongTermAuthenticationParameters {
+    const username = self.userhash_map.get(userhash) orelse return null;
+    return self.long_term_users.get(username);
+}
+
 /// Authenticates the sender of a STUN message using the long-term mechanism.
 fn authenticateLongTerm(self: Self, context: *MessageContext) LongTermAuthenticationError!void {
     const message_attribute_details = context.message_attribute_details.?;
@@ -463,10 +503,14 @@ fn authenticateLongTerm(self: Self, context: *MessageContext) LongTermAuthentica
     if (nonce.security_features.password_algorithms) {
         try self.checkPasswordAlgorithms(context);
     }
-    const username = context.message.attributes[message_attribute_details.username_index.?].data;
-    const authentication_parameters = self.long_term_users.get(username) orelse return error.UnknownUser;
+    const authentication_parameters = if (message_attribute_details.username_index) |username_index| b: {
+        const username = context.message.attributes[username_index].data;
+        break :b self.long_term_users.get(username) orelse return error.UnknownUser;
+    } else if (message_attribute_details.userhash_index) |userhash_index| b: {
+        const userhash = context.message.attributes[userhash_index].data;
+        break :b self.findFromUserhash(userhash) orelse return error.UnknownUser;
+    } else return error.UnknownUser;
 
-    // TODO(Corendos): Handle USERHASH if present.
     const algorithm = context.algorithm orelse ztun.auth.Algorithm.default(.md5);
     const key = authentication_parameters.computeKeyAlloc(context.arena, algorithm) catch return error.Unrecoverable;
 
@@ -475,6 +519,9 @@ fn authenticateLongTerm(self: Self, context: *MessageContext) LongTermAuthentica
     const result = context.message.checkMessageIntegrity(context.arena, message_integrity_type, message_integrity_attribute_index, key) catch return error.Unrecoverable;
 
     if (!result) return error.InvalidMessageIntegrity;
+
+    const stored_nonce = self.getNonce(context.source) orelse return error.StaleNonce;
+    if (!stored_nonce.eql(nonce)) return error.StaleNonce;
 
     const now: u64 = @intCast(std.time.microTimestamp());
 
@@ -533,6 +580,13 @@ fn getOrUpdateNonce(self: *Self, source: std.net.Address, options: getOrUpdateNo
     }
 
     return gop.value_ptr.nonce;
+}
+
+/// Returns the nonce associated with the given client address, or null if there is none.
+fn getNonce(self: *const Self, source: std.net.Address) ?Nonce {
+    const address = Address.from(source);
+
+    return if (self.client_map.get(address)) |client_data| client_data.nonce else null;
 }
 
 /// Represents the context associated with a received STUN message.
@@ -712,28 +766,88 @@ pub fn handleMessage(self: *Self, allocator: std.mem.Allocator, message: ztun.Me
 /// Registers a Short-Term user to the Server.
 pub fn registerShortTermUser(self: *Self, username: []const u8, password: []const u8) !void {
     const gop = try self.short_term_users.getOrPut(username);
-    if (gop.found_existing) {
-        self.allocator.free(gop.value_ptr.password);
+    if (!gop.found_existing) {
+        gop.key_ptr.* = try self.allocator.dupe(u8, username);
     }
+    errdefer self.allocator.free(gop.key_ptr.*);
+    errdefer self.short_term_users.removeByPtr(gop.key_ptr);
+
+    const maybe_old_value = if (gop.found_existing) gop.value_ptr.* else null;
 
     gop.value_ptr.* = ztun.auth.ShortTermAuthenticationParameters{
         .password = try self.allocator.dupe(u8, password),
     };
+
+    if (maybe_old_value) |old_value| {
+        self.allocator.free(old_value.password);
+    }
+}
+
+/// Computes the Userhash associated with the given parameters and tries to place the result in the given buffer.
+/// Returns the amount of bytes written.
+fn computeUserhash(username: []const u8, realm: []const u8, out: []u8) !usize {
+    var sha256_stream = ztun.io.Sha256Stream.init();
+    var sha256_writer = sha256_stream.writer();
+    try ztun.io.writeOpaqueString(username, sha256_writer);
+    try sha256_writer.writeByte(':');
+    try ztun.io.writeOpaqueString(realm, sha256_writer);
+    sha256_writer.context.state.final(out[0..std.crypto.hash.sha2.Sha256.digest_length]);
+    return std.crypto.hash.sha2.Sha256.digest_length;
+}
+
+/// Computes the Userhash associated with the given parameters and tries to allocate the required buffer.
+/// Returns the buffer containing the computed Userhash.
+pub fn computeUserhashAlloc(allocator: std.mem.Allocator, username: []const u8, realm: []const u8) ![]u8 {
+    var buffer = try allocator.alloc(u8, std.crypto.hash.sha2.Sha256.digest_length);
+    errdefer allocator.free(buffer);
+    const bytes_written = try computeUserhash(username, realm, buffer);
+    return buffer[0..bytes_written];
 }
 
 /// Registers a Long-Term user to the Server.
 pub fn registerLongTermUser(self: *Self, username: []const u8, password: []const u8) !void {
     const gop = try self.long_term_users.getOrPut(username);
+    if (!gop.found_existing) {
+        gop.key_ptr.* = try self.allocator.dupe(u8, username);
+    }
+    errdefer self.allocator.free(gop.key_ptr.*);
+    errdefer self.long_term_users.removeByPtr(gop.key_ptr);
+
+    const new_username = try self.allocator.dupe(u8, username);
+    errdefer self.allocator.free(new_username);
+    const new_password = try self.allocator.dupe(u8, password);
+    errdefer self.allocator.free(new_password);
+    const new_realm = try self.allocator.dupe(u8, self.options.realm);
+    errdefer self.allocator.free(new_realm);
+
+    const userhash = try computeUserhashAlloc(self.allocator, username, self.options.realm);
+    defer self.allocator.free(userhash);
+
+    const gop2 = try self.userhash_map.getOrPut(userhash);
+    if (!gop2.found_existing) {
+        gop2.key_ptr.* = try self.allocator.dupe(u8, userhash);
+    }
+    errdefer self.allocator.free(gop.key_ptr.*);
+    errdefer self.userhash_map.removeByPtr(gop.key_ptr);
+
+    const new_username_2 = try self.allocator.dupe(u8, username);
+    errdefer self.allocator.free(new_username_2);
+
     if (gop.found_existing) {
         self.allocator.free(gop.value_ptr.username);
         self.allocator.free(gop.value_ptr.password);
         self.allocator.free(gop.value_ptr.realm);
     }
     gop.value_ptr.* = ztun.auth.LongTermAuthenticationParameters{
-        .username = try self.allocator.dupe(u8, username),
-        .password = try self.allocator.dupe(u8, password),
-        .realm = try self.allocator.dupe(u8, self.options.realm),
+        .username = new_username,
+        .password = new_password,
+        .realm = new_realm,
     };
+
+    if (gop2.found_existing) {
+        self.allocator.free(gop2.value_ptr.*);
+    }
+    gop2.value_ptr.* = new_username_2;
 }
 
 // Test utils
@@ -1260,4 +1374,76 @@ test "Long Term Authentication: stale nonce" {
     try std.testing.expect(findAttribute(result.response, ztun.attr.Type.password_algorithms) != null);
     try std.testing.expect(findAttribute(result.response, ztun.attr.Type.username) == null);
     try std.testing.expect(findAttribute(result.response, ztun.attr.Type.userhash) == null);
+}
+
+test "Long Term Authentication: use USERHASH" {
+    var server = Self.init(std.testing.allocator, Options{ .authentication_type = .long_term, .use_username_anonymity = true });
+    defer server.deinit();
+
+    const authentication_parameters = ztun.auth.LongTermAuthenticationParameters{ .username = "corendos", .password = "password", .realm = "default" };
+
+    try server.registerLongTermUser("corendos", authentication_parameters.password);
+
+    const source = try std.net.Address.parseIp4("192.168.1.18", 18232);
+
+    const initial_message = msg: {
+        var builder = ztun.MessageBuilder.init(std.testing.allocator);
+        defer builder.deinit();
+
+        builder.setClass(.request);
+        builder.setMethod(.binding);
+        builder.transactionId(0x0102030405060708090A0B);
+        builder.addFingerprint();
+        break :msg try builder.build();
+    };
+    defer initial_message.deinit(std.testing.allocator);
+
+    const intial_result = try server.handleMessage(std.testing.allocator, initial_message, source);
+    try std.testing.expectEqual(MessageResultType.response, intial_result);
+    defer intial_result.response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(ztun.Class, .error_response), intial_result.response.type.class);
+
+    const error_code_attribute = try ztun.attr.common.ErrorCode.fromAttribute(findAttribute(intial_result.response, ztun.attr.Type.error_code).?);
+    try std.testing.expectEqual(ztun.attr.common.RawErrorCode.unauthenticated, error_code_attribute.value);
+
+    const nonce_attribute = findAttribute(intial_result.response, ztun.attr.Type.nonce).?;
+
+    const authenticated_message = msg: {
+        var builder = ztun.MessageBuilder.init(std.testing.allocator);
+        defer builder.deinit();
+
+        builder.setClass(.request);
+        builder.setMethod(.binding);
+        builder.transactionId(0x0102030405060708090A0B);
+
+        const userhash = try computeUserhashAlloc(std.testing.allocator, "corendos", "default");
+        defer std.testing.allocator.free(userhash);
+
+        const userhash_attribute = try (ztun.attr.common.Userhash{ .value = userhash[0..32].* }).toAttribute(std.testing.allocator);
+        errdefer std.testing.allocator.free(userhash_attribute.data);
+        try builder.addAttribute(userhash_attribute);
+
+        const realm_attribute = try (ztun.attr.common.Realm{ .value = "default" }).toAttribute(std.testing.allocator);
+        errdefer std.testing.allocator.free(realm_attribute.data);
+        try builder.addAttribute(realm_attribute);
+
+        const new_nonce_attribute = ztun.Attribute{ .type = nonce_attribute.type, .data = try std.testing.allocator.dupe(u8, nonce_attribute.data) };
+        try builder.addAttribute(new_nonce_attribute);
+
+        const key = try authentication_parameters.computeKeyAlloc(std.testing.allocator, ztun.auth.Algorithm.default(.md5));
+        defer std.testing.allocator.free(key);
+
+        builder.addMessageIntegrity(key);
+
+        builder.addFingerprint();
+        break :msg try builder.build();
+    };
+    defer authenticated_message.deinit(std.testing.allocator);
+
+    const authenticated_result = try server.handleMessage(std.testing.allocator, authenticated_message, source);
+    try std.testing.expectEqual(MessageResultType.response, authenticated_result);
+    defer authenticated_result.response.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(ztun.Class, .success_response), authenticated_result.response.type.class);
 }
