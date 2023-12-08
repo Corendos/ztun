@@ -69,14 +69,12 @@ const ClientData = struct {
 
 /// Represents the part of the Nonce that is unique to each client trying to authenticate.
 const NonceData = packed struct {
-    // TODO(Corendos): Is this required ?
-    id: u64,
     // Absolute time until which the nonce is valid,
     validity: u64,
 
     /// Returns true of the two struct are equal.
     pub fn eql(self: NonceData, other: NonceData) bool {
-        return self.id == other.id and self.validity == other.validity;
+        return self.validity == other.validity;
     }
 };
 
@@ -136,7 +134,6 @@ fn parseNonce(raw_nonce: []const u8) !Nonce {
     var reader = stream.reader();
 
     const nonce_data = NonceData{
-        .id = reader.readInt(u64, .little) catch unreachable,
         .validity = reader.readInt(u64, .little) catch unreachable,
     };
 
@@ -152,7 +149,6 @@ fn encodeNonce(nonce: Nonce) [13 + @sizeOf(NonceData)]u8 {
 
     var stream = std.io.fixedBufferStream(result[13..]);
     var writer = stream.writer();
-    writer.writeInt(u64, nonce.data.id, .little) catch unreachable;
     writer.writeInt(u64, nonce.data.validity, .little) catch unreachable;
 
     return result;
@@ -552,10 +548,7 @@ fn getOrUpdateNonce(self: *Self, source: std.net.Address, options: getOrUpdateNo
                 .password_algorithms = options.set_password_algoritms_feature,
                 .username_anonymity = options.set_username_anonymity_feature,
             },
-            .data = NonceData{
-                .validity = now + 60_000_000,
-                .id = 0,
-            },
+            .data = NonceData{ .validity = now + 60_000_000 },
         };
         gop.value_ptr.* = ClientData{ .nonce = nonce };
         return nonce;
@@ -570,10 +563,7 @@ fn getOrUpdateNonce(self: *Self, source: std.net.Address, options: getOrUpdateNo
                 .password_algorithms = options.set_password_algoritms_feature,
                 .username_anonymity = options.set_username_anonymity_feature,
             },
-            .data = NonceData{
-                .validity = now + 60_000_000,
-                .id = 0,
-            },
+            .data = NonceData{ .validity = now + 60_000_000 },
         };
         gop.value_ptr.* = ClientData{ .nonce = nonce };
         return nonce;
@@ -1228,7 +1218,7 @@ test "Long Term Authentication: invalid USERNAME" {
         errdefer std.testing.allocator.free(realm_attribute.data);
         try builder.addAttribute(realm_attribute);
 
-        const nonce = Nonce{ .security_features = .{}, .data = NonceData{ .validity = 0, .id = 0 } };
+        const nonce = Nonce{ .security_features = .{}, .data = NonceData{ .validity = 0 } };
         const nonce_attribute = try (ztun.attr.common.Nonce{ .value = encodeNonce(nonce)[0..] }).toAttribute(std.testing.allocator);
         errdefer std.testing.allocator.free(nonce_attribute.data);
         try builder.addAttribute(nonce_attribute);
@@ -1286,7 +1276,7 @@ test "Long Term Authentication: invalid MESSAGE-INTEGRITY" {
         errdefer std.testing.allocator.free(realm_attribute.data);
         try builder.addAttribute(realm_attribute);
 
-        const nonce = Nonce{ .security_features = .{}, .data = NonceData{ .validity = 0, .id = 0 } };
+        const nonce = Nonce{ .security_features = .{}, .data = NonceData{ .validity = 0 } };
         const nonce_attribute = try (ztun.attr.common.Nonce{ .value = encodeNonce(nonce)[0..] }).toAttribute(std.testing.allocator);
         errdefer std.testing.allocator.free(nonce_attribute.data);
         try builder.addAttribute(nonce_attribute);
@@ -1344,7 +1334,7 @@ test "Long Term Authentication: stale nonce" {
         errdefer std.testing.allocator.free(realm_attribute.data);
         try builder.addAttribute(realm_attribute);
 
-        const nonce = Nonce{ .security_features = .{}, .data = NonceData{ .validity = 0, .id = 0 } };
+        const nonce = Nonce{ .security_features = .{}, .data = NonceData{ .validity = 0 } };
         const nonce_attribute = try (ztun.attr.common.Nonce{ .value = encodeNonce(nonce)[0..] }).toAttribute(std.testing.allocator);
         errdefer std.testing.allocator.free(nonce_attribute.data);
         try builder.addAttribute(nonce_attribute);
