@@ -16,6 +16,6 @@ pub const nonce_cookie_start = "obMatJos2";
 /// Current version of the library.
 pub const version = @import("std").SemanticVersion{
     .major = 0,
-    .minor = 0,
-    .patch = 8,
+    .minor = 1,
+    .patch = 0,
 };
