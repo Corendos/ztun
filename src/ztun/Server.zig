@@ -19,8 +19,6 @@ pub const Options = struct {
     authentication_type: ztun.auth.AuthenticationType = .none,
     /// The realm used in long-term authentication.
     realm: []const u8 = "default",
-    /// Does the Server support anonymous username.
-    use_username_anonymity: bool = false,
     /// The supported algorithms for long-term authentication.
     algorithms: []const ztun.auth.Algorithm = &.{
         .{ .type = ztun.auth.AlgorithmType.md5, .parameters = &.{} },
@@ -278,7 +276,7 @@ fn makeUnauthenticatedMessage(self: *Self, allocator: std.mem.Allocator, context
     if (options.add_nonce) {
         const nonce = try self.getOrUpdateNonce(context.source, .{
             .set_password_algoritms_feature = options.add_password_algorithms,
-            .set_username_anonymity_feature = self.options.use_username_anonymity,
+            .set_username_anonymity_feature = true,
         });
         const encoded_nonce = encodeNonce(nonce);
 
@@ -339,7 +337,7 @@ fn makeStaleNonceMessage(self: *Self, allocator: std.mem.Allocator, context: *Me
 
     const nonce = try self.getOrUpdateNonce(context.source, .{
         .set_password_algoritms_feature = true,
-        .set_username_anonymity_feature = self.options.use_username_anonymity,
+        .set_username_anonymity_feature = true,
     });
     const encoded_nonce = encodeNonce(nonce);
 
@@ -1367,7 +1365,7 @@ test "Long Term Authentication: stale nonce" {
 }
 
 test "Long Term Authentication: use USERHASH" {
-    var server = Self.init(std.testing.allocator, Options{ .authentication_type = .long_term, .use_username_anonymity = true });
+    var server = Self.init(std.testing.allocator, Options{ .authentication_type = .long_term });
     defer server.deinit();
 
     const authentication_parameters = ztun.auth.LongTermAuthenticationParameters{ .username = "corendos", .password = "password", .realm = "default" };
