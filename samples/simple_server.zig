@@ -5,7 +5,7 @@ const std = @import("std");
 const ztun = @import("ztun");
 const utils = @import("utils/utils.zig");
 
-pub fn handleMessage(allocator: std.mem.Allocator, socket: std.os.socket_t, server: *ztun.Server, buffer: []u8) !void {
+pub fn handleMessage(allocator: std.mem.Allocator, socket: std.posix.socket_t, server: *ztun.Server, buffer: []u8) !void {
     // Receive the message in the previously allocated buffer.
     var source: std.net.Address = undefined;
     const raw_message = try utils.receiveFrom(socket, buffer, &source);
@@ -40,11 +40,11 @@ pub fn main() anyerror!void {
     const options = try utils.Options.fromArgsAlloc(allocator);
 
     // Create socket.
-    const socket = try std.os.socket(options.address.any.family, std.os.SOCK.DGRAM, 0);
-    defer std.os.close(socket);
+    const socket = try std.posix.socket(options.address.any.family, std.posix.SOCK.DGRAM, 0);
+    defer std.posix.close(socket);
 
     // Bind socket.
-    try std.os.bind(socket, &options.address.any, options.address.getOsSockLen());
+    try std.posix.bind(socket, &options.address.any, options.address.getOsSockLen());
 
     // Initialize the Server with no authentication.
     var server = ztun.Server.init(allocator, ztun.Server.Options{ .authentication_type = .none });

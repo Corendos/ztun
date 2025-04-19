@@ -17,8 +17,8 @@ pub fn main() anyerror!void {
     const options = try utils.Options.fromArgsAlloc(allocator);
 
     // Create socket.
-    const socket = try std.os.socket(options.address.any.family, std.os.SOCK.DGRAM, 0);
-    defer std.os.close(socket);
+    const socket = try std.posix.socket(options.address.any.family, std.posix.SOCK.DGRAM, 0);
+    defer std.posix.close(socket);
 
     // Allocate the buffer that will be used to send/receive the request/response.
     const buffer = try allocator.alloc(u8, 4096);

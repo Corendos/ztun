@@ -805,7 +805,7 @@ test "MAPPED-ADDRESS deserialization" {
     const mapped_address_attribute = try common.MappedAddress.fromAttribute(attribute);
 
     try std.testing.expectEqual(@as(u16, 0x0102), mapped_address_attribute.port);
-    try std.testing.expectEqual(common.AddressFamilyType.ipv4, mapped_address_attribute.family);
+    try std.testing.expectEqual(common.AddressFamilyType.ipv4, @as(common.AddressFamilyType, mapped_address_attribute.family));
     try std.testing.expectEqual(std.mem.toBytes(std.mem.nativeToBig(u32, 0x7F000001)), mapped_address_attribute.family.ipv4);
 }
 
@@ -832,12 +832,12 @@ test "XOR-MAPPED-ADDRESS deserialization" {
     const xor_mapped_address_attribute = try common.XorMappedAddress.fromAttribute(attribute);
 
     try std.testing.expectEqual(@as(u16, 0xA147), xor_mapped_address_attribute.x_port);
-    try std.testing.expectEqual(common.AddressFamilyType.ipv4, xor_mapped_address_attribute.x_family);
+    try std.testing.expectEqual(common.AddressFamilyType.ipv4, @as(common.AddressFamilyType, xor_mapped_address_attribute.x_family));
     try std.testing.expectEqual(std.mem.toBytes(std.mem.nativeToBig(u32, 0x5E12A443)), xor_mapped_address_attribute.x_family.ipv4);
 
     const decoded_attribute = common.decode(xor_mapped_address_attribute, 0x0);
     try std.testing.expectEqual(@as(u16, 32853), decoded_attribute.port);
-    try std.testing.expectEqual(common.AddressFamilyType.ipv4, decoded_attribute.family);
+    try std.testing.expectEqual(common.AddressFamilyType.ipv4, @as(common.AddressFamilyType, decoded_attribute.family));
     try std.testing.expectEqual(std.mem.toBytes(std.mem.nativeToBig(u32, 0x7F000001)), decoded_attribute.family.ipv4);
 }
 
@@ -1271,7 +1271,7 @@ test "ALTERNATE-SERVER deserialization" {
     const alternate_server_attribute = try common.AlternateServer.fromAttribute(attribute);
 
     try std.testing.expectEqual(@as(u16, 0x0102), alternate_server_attribute.port);
-    try std.testing.expectEqual(common.AddressFamilyType.ipv4, alternate_server_attribute.family);
+    try std.testing.expectEqual(common.AddressFamilyType.ipv4, @as(common.AddressFamilyType, alternate_server_attribute.family));
     try std.testing.expectEqual(std.mem.toBytes(std.mem.nativeToBig(u32, 0x7F000001)), alternate_server_attribute.family.ipv4);
 }
 

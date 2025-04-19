@@ -1,5 +1,6 @@
 .{
-    .name = "ztun",
+    .name = .ztun,
+    .fingerprint = 0x8e7c9e84d4937bc7,
     .version = "0.1.0",
     .paths = .{ "" },
     .dependencies = .{},

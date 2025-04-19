@@ -5,7 +5,7 @@ name: Main
 on:
   push:
     branches:
-      - 'main'
+      - 'master'
       - 'dev'
 jobs:
   test:
@@ -19,7 +19,7 @@ jobs:
       - name: Setup Zig
         uses: goto-bus-stop/setup-zig@v2
         with:
-          version: 0.12.0-dev.1768+39a966b0a
+          version: 0.14.0
       - name: Build samples
         run: |
           zig build -Dbuild_samples

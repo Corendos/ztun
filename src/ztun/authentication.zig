@@ -92,7 +92,7 @@ pub const LongTermAuthenticationParameters = struct {
     /// Computes the authentication key corresponding to the stored parameters and tries to allocate the required buffer.
     /// Returns the buffer containing the computed key.
     pub fn computeKeyAlloc(self: LongTermAuthenticationParameters, allocator: std.mem.Allocator, algorithm: Algorithm) ![]u8 {
-        const alloc_size = switch (algorithm.type) {
+        const alloc_size: usize = switch (algorithm.type) {
             .md5 => std.crypto.hash.Md5.digest_length,
             .sha256 => std.crypto.hash.sha2.Sha256.digest_length,
             _ => unreachable,

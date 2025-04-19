@@ -123,7 +123,7 @@ switch (result) {
 Samples are available in the [`samples`](samples/) subfolder if you want to have a better overview.
 
 ## Supported zig version
-`0.12.0-dev.1768+39a966b0a`
+`0.14.0`
 
 ## License
 

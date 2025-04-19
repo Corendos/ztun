@@ -29,16 +29,16 @@ pub const Options = struct {
     }
 };
 
-pub fn receiveFrom(socket: std.os.socket_t, buf: []u8, address: *std.net.Address) ![]const u8 {
-    var storage: std.os.sockaddr.storage = undefined;
-    var raw_address_length: std.os.socklen_t = @sizeOf(@TypeOf(storage));
-    const raw_address = @as(*align(4) std.os.sockaddr, @ptrCast(&storage));
+pub fn receiveFrom(socket: std.posix.socket_t, buf: []u8, address: *std.net.Address) ![]const u8 {
+    var storage: std.posix.sockaddr.storage = undefined;
+    var raw_address_length: std.posix.socklen_t = @sizeOf(@TypeOf(storage));
+    const raw_address = @as(*align(4) std.posix.sockaddr, @ptrCast(&storage));
 
-    const result = try std.os.recvfrom(socket, buf, 0, raw_address, &raw_address_length);
+    const result = try std.posix.recvfrom(socket, buf, 0, raw_address, &raw_address_length);
     address.* = std.net.Address.initPosix(raw_address);
     return buf[0..result];
 }
 
-pub fn sendTo(socket: std.os.socket_t, buf: []const u8, address: std.net.Address) !usize {
-    return std.os.sendto(socket, buf, 0, &address.any, address.getOsSockLen());
+pub fn sendTo(socket: std.posix.socket_t, buf: []const u8, address: std.net.Address) !usize {
+    return std.posix.sendto(socket, buf, 0, &address.any, address.getOsSockLen());
 }

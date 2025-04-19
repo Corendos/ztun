@@ -39,8 +39,8 @@ const Address = union(enum) {
 
     pub fn from(address: std.net.Address) Address {
         return switch (address.any.family) {
-            std.os.AF.INET => .{ .ipv4 = address.in },
-            std.os.AF.INET6 => .{ .ipv6 = address.in6 },
+            std.posix.AF.INET => .{ .ipv4 = address.in },
+            std.posix.AF.INET6 => .{ .ipv6 = address.in6 },
             else => unreachable,
         };
     }
@@ -600,14 +600,14 @@ const MessageContext = struct {
 /// Make a
 fn makeXorMappedAddressAttribute(allocator: std.mem.Allocator, source: std.net.Address, transaction_id: u96) !attr.Attribute {
     const xor_mapped_attribute = switch (source.any.family) {
-        std.os.AF.INET => blk: {
+        std.posix.AF.INET => blk: {
             const ipv4 = source.in;
             break :blk attr.common.encode(attr.common.MappedAddress{
                 .port = std.mem.bigToNative(u16, ipv4.sa.port),
                 .family = attr.common.AddressFamily{ .ipv4 = std.mem.toBytes(ipv4.sa.addr) },
             }, transaction_id);
         },
-        std.os.AF.INET6 => blk: {
+        std.posix.AF.INET6 => blk: {
             const ipv6 = source.in6;
             break :blk attr.common.encode(attr.common.MappedAddress{
                 .port = std.mem.bigToNative(u16, ipv6.sa.port),
@@ -896,7 +896,7 @@ test "Short Term Authentication: missing MESSAGE-INTEGRITY/MESSAGE-INTEGRITY-SHA
     defer arena_state.deinit();
 
     const result = try server.handleMessage(arena_state.allocator(), message, try std.net.Address.parseIp4("192.168.1.18", 18232));
-    try std.testing.expectEqual(MessageResultType.response, result);
+    try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, result));
     try std.testing.expectEqual(@as(ztun.Class, .error_response), result.response.type.class);
 
     const error_code_attribute = try ztun.attr.common.ErrorCode.fromAttribute(findAttribute(result.response, ztun.attr.Type.error_code).?);
@@ -933,7 +933,7 @@ test "Short Term Authentication: missing USERNAME" {
     defer arena_state.deinit();
 
     const result = try server.handleMessage(arena_state.allocator(), message, try std.net.Address.parseIp4("192.168.1.18", 18232));
-    try std.testing.expectEqual(MessageResultType.response, result);
+    try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, result));
     try std.testing.expectEqual(@as(ztun.Class, .error_response), result.response.type.class);
 
     const error_code_attribute = try ztun.attr.common.ErrorCode.fromAttribute(findAttribute(result.response, ztun.attr.Type.error_code).?);
@@ -974,7 +974,7 @@ test "Short Term Authentication: unknown USERNAME" {
     defer arena_state.deinit();
 
     const result = try server.handleMessage(arena_state.allocator(), message, try std.net.Address.parseIp4("192.168.1.18", 18232));
-    try std.testing.expectEqual(MessageResultType.response, result);
+    try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, result));
     try std.testing.expectEqual(@as(ztun.Class, .error_response), result.response.type.class);
 
     const error_code_attribute = try ztun.attr.common.ErrorCode.fromAttribute(findAttribute(result.response, ztun.attr.Type.error_code).?);
@@ -1014,7 +1014,7 @@ test "Short Term Authentication: wrong MESSAGE-INTEGRITY" {
     defer arena_state.deinit();
 
     const result = try server.handleMessage(arena_state.allocator(), message, try std.net.Address.parseIp4("192.168.1.18", 18232));
-    try std.testing.expectEqual(MessageResultType.response, result);
+    try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, result));
     try std.testing.expectEqual(@as(ztun.Class, .error_response), result.response.type.class);
 
     const error_code_attribute = try ztun.attr.common.ErrorCode.fromAttribute(findAttribute(result.response, ztun.attr.Type.error_code).?);
@@ -1045,7 +1045,7 @@ test "Long Term Authentication: missing MESSAGE-INTEGRITY/MESSAGE-INTEGRITY-SHA2
     defer arena_state.deinit();
 
     const result = try server.handleMessage(arena_state.allocator(), message, try std.net.Address.parseIp4("192.168.1.18", 18232));
-    try std.testing.expectEqual(MessageResultType.response, result);
+    try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, result));
     try std.testing.expectEqual(@as(ztun.Class, .error_response), result.response.type.class);
 
     const error_code_attribute = try ztun.attr.common.ErrorCode.fromAttribute(findAttribute(result.response, ztun.attr.Type.error_code).?);
@@ -1087,7 +1087,7 @@ test "Long Term Authentication: missing USERNAME" {
     defer arena_state.deinit();
 
     const result = try server.handleMessage(arena_state.allocator(), message, try std.net.Address.parseIp4("192.168.1.18", 18232));
-    try std.testing.expectEqual(MessageResultType.response, result);
+    try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, result));
     try std.testing.expectEqual(@as(ztun.Class, .error_response), result.response.type.class);
 
     const error_code_attribute = try ztun.attr.common.ErrorCode.fromAttribute(findAttribute(result.response, ztun.attr.Type.error_code).?);
@@ -1131,7 +1131,7 @@ test "Long Term Authentication: missing REALM" {
     defer arena_state.deinit();
 
     const result = try server.handleMessage(arena_state.allocator(), message, try std.net.Address.parseIp4("192.168.1.18", 18232));
-    try std.testing.expectEqual(MessageResultType.response, result);
+    try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, result));
     try std.testing.expectEqual(@as(ztun.Class, .error_response), result.response.type.class);
 
     const error_code_attribute = try ztun.attr.common.ErrorCode.fromAttribute(findAttribute(result.response, ztun.attr.Type.error_code).?);
@@ -1179,7 +1179,7 @@ test "Long Term Authentication: missing NONCE" {
     defer arena_state.deinit();
 
     const result = try server.handleMessage(arena_state.allocator(), message, try std.net.Address.parseIp4("192.168.1.18", 18232));
-    try std.testing.expectEqual(MessageResultType.response, result);
+    try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, result));
     try std.testing.expectEqual(@as(ztun.Class, .error_response), result.response.type.class);
 
     const error_code_attribute = try ztun.attr.common.ErrorCode.fromAttribute(findAttribute(result.response, ztun.attr.Type.error_code).?);
@@ -1236,7 +1236,7 @@ test "Long Term Authentication: invalid USERNAME" {
     const arena = arena_state.allocator();
 
     const result = try server.handleMessage(arena, message, source);
-    try std.testing.expectEqual(MessageResultType.response, result);
+    try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, result));
     try std.testing.expectEqual(@as(ztun.Class, .error_response), result.response.type.class);
 
     const error_code_attribute = try ztun.attr.common.ErrorCode.fromAttribute(findAttribute(result.response, ztun.attr.Type.error_code).?);
@@ -1293,7 +1293,7 @@ test "Long Term Authentication: invalid MESSAGE-INTEGRITY" {
     const arena = arena_state.allocator();
 
     const result = try server.handleMessage(arena, message, source);
-    try std.testing.expectEqual(MessageResultType.response, result);
+    try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, result));
     try std.testing.expectEqual(@as(ztun.Class, .error_response), result.response.type.class);
 
     const error_code_attribute = try ztun.attr.common.ErrorCode.fromAttribute(findAttribute(result.response, ztun.attr.Type.error_code).?);
@@ -1352,7 +1352,7 @@ test "Long Term Authentication: stale nonce" {
     const arena = arena_state.allocator();
 
     const result = try server.handleMessage(arena, message, source);
-    try std.testing.expectEqual(MessageResultType.response, result);
+    try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, result));
     try std.testing.expectEqual(@as(ztun.Class, .error_response), result.response.type.class);
 
     const error_code_attribute = try ztun.attr.common.ErrorCode.fromAttribute(findAttribute(result.response, ztun.attr.Type.error_code).?);
@@ -1387,7 +1387,7 @@ test "Long Term Authentication: use USERHASH" {
     defer initial_message.deinit(std.testing.allocator);
 
     const intial_result = try server.handleMessage(std.testing.allocator, initial_message, source);
-    try std.testing.expectEqual(MessageResultType.response, intial_result);
+    try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, intial_result));
     defer intial_result.response.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(ztun.Class, .error_response), intial_result.response.type.class);
@@ -1430,7 +1430,7 @@ test "Long Term Authentication: use USERHASH" {
     defer authenticated_message.deinit(std.testing.allocator);
 
     const authenticated_result = try server.handleMessage(std.testing.allocator, authenticated_message, source);
-    try std.testing.expectEqual(MessageResultType.response, authenticated_result);
+    try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, authenticated_result));
     defer authenticated_result.response.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(ztun.Class, .success_response), authenticated_result.response.type.class);
