@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 const std = @import("std");
+
 const ztun = @import("ztun");
+
 const utils = @import("utils/utils.zig");
 
 pub fn handleMessage(allocator: std.mem.Allocator, socket: std.posix.socket_t, server: *ztun.Server, buffer: []u8) !void {
@@ -11,8 +13,8 @@ pub fn handleMessage(allocator: std.mem.Allocator, socket: std.posix.socket_t, s
     const raw_message = try utils.receiveFrom(socket, buffer, &source);
 
     const message = blk: {
-        var stream = std.io.fixedBufferStream(raw_message);
-        break :blk try ztun.Message.readAlloc(allocator, stream.reader());
+        var reader = std.Io.Reader.fixed(raw_message);
+        break :blk try ztun.Message.readAlloc(allocator, &reader);
     };
     defer message.deinit(allocator);
 
@@ -22,9 +24,9 @@ pub fn handleMessage(allocator: std.mem.Allocator, socket: std.posix.socket_t, s
         .ok => {},
         .discard => {},
         .response => |response| {
-            var stream = std.io.fixedBufferStream(buffer);
-            try response.write(stream.writer());
-            _ = try utils.sendTo(socket, stream.getWritten(), source);
+            var writer = std.Io.Writer.fixed(buffer);
+            try response.write(&writer);
+            _ = try utils.sendTo(socket, writer.buffered(), source);
             response.deinit(allocator);
         },
     }

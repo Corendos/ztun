@@ -4,15 +4,13 @@
 const std = @import("std");
 
 pub const attr = @import("ztun/attributes.zig");
-pub const io = @import("ztun/io.zig");
-pub const fmt = @import("ztun/fmt.zig");
+pub const Attribute = attr.Attribute;
 pub const auth = @import("ztun/authentication.zig");
 pub const constants = @import("ztun/constants.zig");
-
 pub const magic_cookie = constants.magic_cookie;
 pub const fingerprint_magic = constants.fingerprint_magic;
-
-pub const Attribute = attr.Attribute;
+pub const fmt = @import("ztun/fmt.zig");
+pub const io = @import("ztun/io.zig");
 pub const Server = @import("ztun/Server.zig");
 
 /// Represents the method used in the message. The RFC originally defined only the "binding" method.
@@ -110,11 +108,10 @@ pub const MessageIntegrityType = enum {
 };
 
 pub const DeserializationError = error{
-    EndOfStream,
     NonZeroStartingBits,
     WrongMagicCookie,
     UnsupportedMethod,
-} || std.mem.Allocator.Error;
+} || std.Io.Reader.Error || std.mem.Allocator.Error;
 
 /// Represents a STUN message.
 pub const Message = struct {
@@ -152,7 +149,7 @@ pub const Message = struct {
     }
 
     /// Writes the header of the message to the given writer.
-    fn writeHeader(self: *const Message, writer: anytype) !void {
+    fn writeHeader(self: *const Message, writer: *std.Io.Writer) !void {
         try writer.writeInt(u16, @as(u16, @intCast(self.type.toInteger())), .big);
         try writer.writeInt(u16, @as(u16, @truncate(self.length)), .big);
         try writer.writeInt(u32, magic_cookie, .big);
@@ -160,14 +157,14 @@ pub const Message = struct {
     }
 
     /// Writes the list of attributes to the given writer.
-    fn writeAttributes(self: *const Message, writer: anytype) !void {
+    fn writeAttributes(self: *const Message, writer: *std.Io.Writer) !void {
         for (self.attributes) |attribute| {
             try attr.write(attribute, writer);
         }
     }
 
     /// Writes the whole message to the given writer.
-    pub fn write(self: *const Message, writer: anytype) !void {
+    pub fn write(self: *const Message, writer: *std.Io.Writer) !void {
         try self.writeHeader(writer);
         try self.writeAttributes(writer);
     }
@@ -182,9 +179,9 @@ pub const Message = struct {
         var message = self.*;
         // Take fingerprint into account
         message.length += 8;
-        var stream = std.io.fixedBufferStream(buffer);
-        message.write(stream.writer()) catch unreachable;
-        return std.hash.Crc32.hash(stream.getWritten()) ^ @as(u32, fingerprint_magic);
+        var writer = std.Io.Writer.fixed(buffer);
+        message.write(&writer) catch unreachable;
+        return std.hash.Crc32.hash(writer.buffered()) ^ @as(u32, fingerprint_magic);
     }
 
     /// Computes the message integrity value corresponding to the message. It computes the adjusted length value to produce a valid value.
@@ -200,9 +197,9 @@ pub const Message = struct {
         var message = self.*;
         // Take message integrity into account
         message.length += 24;
-        var stream = std.io.fixedBufferStream(buffer);
-        message.write(stream.writer()) catch unreachable;
-        std.crypto.auth.hmac.HmacSha1.create(hmac_buffer[0..20], stream.getWritten(), key);
+        var writer = std.Io.Writer.fixed(buffer);
+        message.write(&writer) catch unreachable;
+        std.crypto.auth.hmac.HmacSha1.create(hmac_buffer[0..20], writer.buffered(), key);
         return hmac_buffer[0..20];
     }
 
@@ -219,16 +216,16 @@ pub const Message = struct {
         var message = self.*;
         // Take message integrity into account
         message.length += 36;
-        var stream = std.io.fixedBufferStream(buffer);
-        message.write(stream.writer()) catch unreachable;
-        const written = stream.getWritten();
+        var writer = std.Io.Writer.fixed(buffer);
+        message.write(&writer) catch unreachable;
+        const written = writer.buffered();
         std.crypto.auth.hmac.sha2.HmacSha256.create(hmac_buffer[0..32], written, key);
         return hmac_buffer[0..];
     }
 
     /// Tries to read the message type from the given reader. Returns a descriptive error on failure.
-    fn readMessageType(reader: anytype) DeserializationError!MessageType {
-        const raw_message_type: u16 = try reader.readInt(u16, .big);
+    fn readMessageType(reader: *std.Io.Reader) DeserializationError!MessageType {
+        const raw_message_type: u16 = try reader.takeInt(u16, .big);
         if (raw_message_type & 0b1100_0000_0000_0000 != 0) {
             return error.NonZeroStartingBits;
         }
@@ -236,12 +233,12 @@ pub const Message = struct {
     }
 
     /// Tries to read the message header. Returns a descriptive error on failure.
-    pub fn readHeader(reader: anytype) DeserializationError!Header {
+    pub fn readHeader(reader: *std.Io.Reader) DeserializationError!Header {
         const message_type = try readMessageType(reader);
-        const message_length = try reader.readInt(u16, .big);
-        const message_magic = try reader.readInt(u32, .big);
+        const message_length = try reader.takeInt(u16, .big);
+        const message_magic = try reader.takeInt(u32, .big);
         if (message_magic != magic_cookie) return error.WrongMagicCookie;
-        const transaction_id = try reader.readInt(u96, .big);
+        const transaction_id = try reader.takeInt(u96, .big);
 
         return Header{
             .type = message_type,
@@ -252,28 +249,29 @@ pub const Message = struct {
 
     /// Tries to read the message from the given reader, allocating the required storage from the allocator. Returns a descriptive error on failure.
     /// The returned message is the owner of the attribute list.
-    pub fn readAlloc(allocator: std.mem.Allocator, reader: anytype) DeserializationError!Message {
-        var attribute_list = std.ArrayList(Attribute).init(allocator);
+    pub fn readAlloc(allocator: std.mem.Allocator, reader: *std.Io.Reader) DeserializationError!Message {
+        var attribute_list: std.ArrayList(Attribute) = .empty;
         defer {
             for (attribute_list.items) |a| {
                 allocator.free(a.data);
             }
-            attribute_list.deinit();
+            attribute_list.deinit(allocator);
         }
 
         const message_header = try readHeader(reader);
 
-        var attribute_reader_state = std.io.countingReader(reader);
-        while (attribute_reader_state.bytes_read < message_header.length) {
-            const attribute = try attr.readAlloc(attribute_reader_state.reader(), allocator);
-            try attribute_list.append(attribute);
+        var read: usize = 0;
+        while (read < message_header.length) {
+            const attribute = try attr.readAlloc(reader, allocator);
+            try attribute_list.append(allocator, attribute);
+            read += attribute.length();
         }
 
         return Message{
             .type = message_header.type,
             .transaction_id = message_header.transaction_id,
             .length = message_header.length,
-            .attributes = try attribute_list.toOwnedSlice(),
+            .attributes = try attribute_list.toOwnedSlice(allocator),
         };
     }
 
@@ -313,6 +311,10 @@ pub const Message = struct {
             },
         };
     }
+
+    pub fn format(message: Message, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        return fmt.formatMessageImpl(message, writer);
+    }
 };
 
 /// Convenience helper to build a message.
@@ -340,13 +342,13 @@ pub const MessageBuilder = struct {
     pub fn init(allocator: std.mem.Allocator) MessageBuilder {
         return MessageBuilder{
             .allocator = allocator,
-            .attribute_list = std.ArrayList(Attribute).init(allocator),
+            .attribute_list = .empty,
         };
     }
 
     /// Handles deallocation of everything that has been allocated to build the message and is no longer required.
-    pub fn deinit(self: *const MessageBuilder) void {
-        self.attribute_list.deinit();
+    pub fn deinit(self: *MessageBuilder) void {
+        self.attribute_list.deinit(self.allocator);
     }
 
     /// Adds a random transaction ID to the message.
@@ -397,7 +399,7 @@ pub const MessageBuilder = struct {
 
     /// Adds an attribute to the message.
     pub fn addAttribute(self: *MessageBuilder, attribute: Attribute) !void {
-        try self.attribute_list.append(attribute);
+        try self.attribute_list.append(self.allocator, attribute);
     }
 
     /// Returns true if the message is sufficiently specified to be generated.
@@ -457,10 +459,10 @@ pub const MessageBuilder = struct {
             const attribute = try fingerprint_attribute.toAttribute(self.allocator);
             errdefer self.allocator.free(attribute.data);
 
-            try self.attribute_list.append(attribute);
+            try self.attribute_list.append(self.allocator, attribute);
         }
 
-        return Message.fromParts(self.class.?, self.method.?, self.transaction_id.?, try self.attribute_list.toOwnedSlice());
+        return Message.fromParts(self.class.?, self.method.?, self.transaction_id.?, try self.attribute_list.toOwnedSlice(self.allocator));
     }
 };
 
@@ -516,8 +518,8 @@ test "try to deserialize a message" {
         0x03, 0x04,
     };
 
-    var stream = std.io.fixedBufferStream(&bytes);
-    const message = try Message.readAlloc(std.testing.allocator, stream.reader());
+    var reader = std.Io.Reader.fixed(&bytes);
+    const message = try Message.readAlloc(std.testing.allocator, &reader);
     defer message.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(MessageType{ .class = .request, .method = .binding }, message.type);

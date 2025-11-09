@@ -102,8 +102,8 @@ try server.registerLongTermUser("user". "password");
 
 const message_source: std.net.Address = ...; // The source IP that sent the message.
 const raw_message = ...; // Read a message from the data transport.
-const reader = std.io.fixedBufferStream(raw_message).reader();
-const message = try ztun.Message.readAlloc(allocator, reader);
+var reader = std.Io.Reader.fixed(raw_message);
+const message = try ztun.Message.readAlloc(allocator, &reader);
 defer message.deinit(allocator);
 
 const result = server.handleMessage(allocator, message, message_source);
@@ -123,7 +123,7 @@ switch (result) {
 Samples are available in the [`samples`](samples/) subfolder if you want to have a better overview.
 
 ## Supported zig version
-`0.14.0`
+`0.15.2`
 
 ## License
 

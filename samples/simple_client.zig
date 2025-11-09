@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 const std = @import("std");
-const ztun = @import("ztun");
-const utils = @import("utils/utils.zig");
-
 const linux = std.os.linux;
+
+const ztun = @import("ztun");
+
+const utils = @import("utils/utils.zig");
 
 pub fn main() anyerror!void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -41,10 +42,9 @@ pub fn main() anyerror!void {
     defer request.deinit(allocator);
 
     const raw_request = b: {
-        var stream = std.io.fixedBufferStream(buffer);
-        const writer = stream.writer();
-        try request.write(writer);
-        break :b stream.getWritten();
+        var writer = std.Io.Writer.fixed(buffer);
+        try request.write(&writer);
+        break :b writer.buffered();
     };
 
     // Send the request
@@ -54,11 +54,11 @@ pub fn main() anyerror!void {
     var source: std.net.Address = undefined;
     const raw_message = try utils.receiveFrom(socket, buffer, &source);
     const message: ztun.Message = blk: {
-        var stream = std.io.fixedBufferStream(raw_message);
-        break :blk try ztun.Message.readAlloc(allocator, stream.reader());
+        var reader = std.Io.Reader.fixed(raw_message);
+        break :blk try ztun.Message.readAlloc(allocator, &reader);
     };
     defer message.deinit(allocator);
 
     // Print a human-readable description of the response.
-    std.log.info("{}", .{ztun.fmt.messageFormatter(message)});
+    std.log.info("{f}", .{message});
 }

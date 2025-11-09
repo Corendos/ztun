@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 const std = @import("std");
-const io = @import("io.zig");
-const auth = @import("authentication.zig");
 
+const auth = @import("authentication.zig");
+const io = @import("io.zig");
 const magic_cookie = @import("constants.zig").magic_cookie;
 
 /// Represents a raw STUN attribute.
@@ -58,7 +58,7 @@ pub inline fn isComprehensionOptional(value: u16) bool {
 }
 
 /// Writes an attribute to the given writer.
-pub fn write(attribute: Attribute, writer: anytype) !void {
+pub fn write(attribute: Attribute, writer: *std.Io.Writer) !void {
     try writer.writeInt(u16, attribute.type, .big);
     try writer.writeInt(u16, @as(u16, @intCast(attribute.data.len)), .big);
     try io.writeAllAligned(attribute.data, 4, writer);
@@ -66,9 +66,9 @@ pub fn write(attribute: Attribute, writer: anytype) !void {
 
 /// Reads an attribute from the given reader and allocate the required storage using the given allocator.
 /// The attribute owns the allocated memory.
-pub fn readAlloc(reader: anytype, allocator: std.mem.Allocator) !Attribute {
-    const @"type" = try reader.readInt(u16, .big);
-    const len = try reader.readInt(u16, .big);
+pub fn readAlloc(reader: *std.Io.Reader, allocator: std.mem.Allocator) !Attribute {
+    const @"type" = try reader.takeInt(u16, .big);
+    const len = try reader.takeInt(u16, .big);
     const data = try allocator.alloc(u8, len);
     errdefer allocator.free(data);
 
@@ -83,18 +83,18 @@ test "write attribute" {
     };
 
     var buffer: [128]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
+    var writer = std.Io.Writer.fixed(&buffer);
 
-    try write(attribute, stream.writer());
-    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x42, 0x00, 0x03, 0x01, 0x02, 0x03, 0x00 }, stream.getWritten());
+    try write(attribute, &writer);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x42, 0x00, 0x03, 0x01, 0x02, 0x03, 0x00 }, writer.buffered());
 }
 
 test "read attribute" {
     const raw = [_]u8{ 0x00, 0x42, 0x00, 0x03, 0x01, 0x02, 0x03, 0x00 };
 
-    var stream = std.io.fixedBufferStream(&raw);
+    var reader = std.Io.Reader.fixed(&raw);
 
-    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    const attribute = try readAlloc(&reader, std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
     try std.testing.expectEqual(@as(u16, 0x042), attribute.type);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3 }, attribute.data);
@@ -107,8 +107,7 @@ pub const common = struct {
     pub const ConversionError = error{
         InvalidAttribute,
         NoSpaceLeft,
-        EndOfStream,
-    } || std.mem.Allocator.Error;
+    } || std.Io.Reader.Error || std.mem.Allocator.Error;
 
     pub const AddressFamilyType = enum(u8) {
         ipv4 = 0x01,
@@ -118,7 +117,7 @@ pub const common = struct {
     pub const AddressFamily = union(AddressFamilyType) {
         ipv4: [4]u8,
         ipv6: [16]u8,
-        pub fn format(self: AddressFamily, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+        pub fn format(self: AddressFamily, writer: *std.Io.Writer) std.Io.Writer.Error!void {
             switch (self) {
                 .ipv4 => |value| try writer.print("{}.{}.{}.{}", .{ value[0], value[1], value[2], value[3] }),
                 .ipv6 => |value| try writer.print("{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}:{x:0>2}{x:0>2}", .{
@@ -132,8 +131,6 @@ pub const common = struct {
                     value[14], value[15],
                 }),
             }
-            _ = options;
-            _ = fmt;
         }
     };
 
@@ -145,19 +142,20 @@ pub const common = struct {
         pub fn fromAttribute(attribute: Attribute) ConversionError!MappedAddress {
             if (attribute.type != Type.mapped_address) return error.InvalidAttribute;
 
-            var stream = std.io.fixedBufferStream(attribute.data);
-            var reader = stream.reader();
-            _ = try reader.readByte();
-            const raw_family_type = reader.readByte() catch return error.InvalidAttribute;
+            var reader = std.Io.Reader.fixed(attribute.data);
+            _ = try reader.takeByte();
+            const raw_family_type = reader.takeByte() catch return error.InvalidAttribute;
             const family_type = std.meta.intToEnum(AddressFamilyType, raw_family_type) catch return error.InvalidAttribute;
-            const port: u16 = reader.readInt(u16, .big) catch return error.InvalidAttribute;
+            const port: u16 = reader.takeInt(u16, .big) catch return error.InvalidAttribute;
             switch (family_type) {
                 .ipv4 => {
-                    const raw_address = reader.readBytesNoEof(4) catch return error.InvalidAttribute;
+                    var raw_address: [4]u8 = undefined;
+                    reader.readSliceAll(&raw_address) catch return error.InvalidAttribute;
                     return MappedAddress{ .family = .{ .ipv4 = raw_address }, .port = port };
                 },
                 .ipv6 => {
-                    const raw_address = reader.readBytesNoEof(16) catch return error.InvalidAttribute;
+                    var raw_address: [16]u8 = undefined;
+                    reader.readSliceAll(&raw_address) catch return error.InvalidAttribute;
                     return MappedAddress{ .family = .{ .ipv6 = raw_address }, .port = port };
                 },
             }
@@ -171,8 +169,7 @@ pub const common = struct {
             const data = try allocator.alloc(u8, data_size);
             errdefer allocator.free(data);
 
-            var stream = std.io.fixedBufferStream(data);
-            var writer = stream.writer();
+            var writer = std.Io.Writer.fixed(data);
             writer.writeByte(0) catch unreachable;
             writer.writeByte(@intFromEnum(self.family)) catch unreachable;
             writer.writeInt(u16, self.port, .big) catch unreachable;
@@ -193,19 +190,20 @@ pub const common = struct {
         pub fn fromAttribute(attribute: Attribute) ConversionError!XorMappedAddress {
             if (attribute.type != Type.xor_mapped_address) return error.InvalidAttribute;
 
-            var stream = std.io.fixedBufferStream(attribute.data);
-            var reader = stream.reader();
-            _ = try reader.readByte();
-            const raw_x_family_type = reader.readByte() catch return error.InvalidAttribute;
+            var reader = std.Io.Reader.fixed(attribute.data);
+            _ = try reader.takeByte();
+            const raw_x_family_type = reader.takeByte() catch return error.InvalidAttribute;
             const x_family_type = std.meta.intToEnum(AddressFamilyType, raw_x_family_type) catch return error.InvalidAttribute;
-            const x_port: u16 = reader.readInt(u16, .big) catch return error.InvalidAttribute;
+            const x_port: u16 = reader.takeInt(u16, .big) catch return error.InvalidAttribute;
             switch (x_family_type) {
                 .ipv4 => {
-                    const raw_address = reader.readBytesNoEof(4) catch return error.InvalidAttribute;
+                    var raw_address: [4]u8 = undefined;
+                    reader.readSliceAll(&raw_address) catch return error.InvalidAttribute;
                     return XorMappedAddress{ .x_family = .{ .ipv4 = raw_address }, .x_port = x_port };
                 },
                 .ipv6 => {
-                    const raw_address = reader.readBytesNoEof(16) catch return error.InvalidAttribute;
+                    var raw_address: [16]u8 = undefined;
+                    reader.readSliceAll(&raw_address) catch return error.InvalidAttribute;
                     return XorMappedAddress{ .x_family = .{ .ipv6 = raw_address }, .x_port = x_port };
                 },
             }
@@ -219,8 +217,7 @@ pub const common = struct {
             const data = try allocator.alloc(u8, data_size);
             errdefer allocator.free(data);
 
-            var stream = std.io.fixedBufferStream(data);
-            var writer = stream.writer();
+            var writer = std.Io.Writer.fixed(data);
             writer.writeByte(0) catch unreachable;
             writer.writeByte(@intFromEnum(self.x_family)) catch unreachable;
             writer.writeInt(u16, self.x_port, .big) catch unreachable;
@@ -376,10 +373,9 @@ pub const common = struct {
 
         pub fn fromAttribute(attribute: Attribute) ConversionError!Fingerprint {
             if (attribute.type != Type.fingerprint) return error.InvalidAttribute;
-            var stream = std.io.fixedBufferStream(attribute.data);
-            var reader = stream.reader();
+            var reader = std.Io.Reader.fixed(attribute.data);
 
-            const value = reader.readInt(u32, .big) catch return error.InvalidAttribute;
+            const value = reader.takeInt(u32, .big) catch return error.InvalidAttribute;
             return Fingerprint{
                 .value = value,
             };
@@ -389,8 +385,7 @@ pub const common = struct {
             const data = try allocator.alloc(u8, 4);
             errdefer allocator.free(data);
 
-            var stream = std.io.fixedBufferStream(data);
-            var writer = stream.writer();
+            var writer = std.Io.Writer.fixed(data);
 
             writer.writeInt(u32, self.value, .big) catch unreachable;
 
@@ -431,15 +426,14 @@ pub const common = struct {
 
         pub fn fromAttribute(attribute: Attribute) ConversionError!ErrorCode {
             if (attribute.type != Type.error_code) return error.InvalidAttribute;
-            var stream = std.io.fixedBufferStream(attribute.data);
-            var reader = stream.reader();
+            var reader = std.Io.Reader.fixed(attribute.data);
 
-            _ = reader.readInt(u16, .big) catch return error.InvalidAttribute;
-            const raw_class = reader.readByte() catch return error.InvalidAttribute;
-            const raw_number = reader.readByte() catch return error.InvalidAttribute;
+            _ = reader.takeInt(u16, .big) catch return error.InvalidAttribute;
+            const raw_class = reader.takeByte() catch return error.InvalidAttribute;
+            const raw_number = reader.takeByte() catch return error.InvalidAttribute;
             const raw_error_code = std.meta.intToEnum(RawErrorCode, rawErrorCodeFromClassAndNumber(@as(u3, @intCast(raw_class)), raw_number)) catch return error.InvalidAttribute;
 
-            const reason = stream.buffer[stream.pos..];
+            const reason = reader.buffered();
 
             return ErrorCode{ .value = raw_error_code, .reason = reason };
         }
@@ -448,8 +442,7 @@ pub const common = struct {
             const data = try allocator.alloc(u8, 4 + self.reason.len);
             errdefer allocator.free(data);
 
-            var stream = std.io.fixedBufferStream(data);
-            var writer = stream.writer();
+            var writer = std.Io.Writer.fixed(data);
 
             writer.writeInt(u32, @intFromEnum(self.value), .big) catch unreachable;
             writer.writeAll(self.reason) catch unreachable;
@@ -495,28 +488,29 @@ pub const common = struct {
         pub fn fromAttribute(attribute: Attribute, allocator: std.mem.Allocator) ConversionError!PasswordAlgorithms {
             if (attribute.type != Type.password_algorithms) return error.InvalidAttribute;
 
-            var stream = std.io.fixedBufferStream(attribute.data);
-            var reader = stream.reader();
+            var reader = std.Io.Reader.fixed(attribute.data);
 
             var algorithms_count: usize = 0;
-            while (stream.pos < stream.buffer.len) : (algorithms_count += 1) {
-                _ = reader.readInt(u16, .big) catch return error.InvalidAttribute;
-                const length = reader.readInt(u16, .big) catch return error.InvalidAttribute;
+            var read: usize = 0;
+            while (read < attribute.data.len) : (algorithms_count += 1) {
+                _ = reader.takeInt(u16, .big) catch return error.InvalidAttribute;
+                const length = reader.takeInt(u16, .big) catch return error.InvalidAttribute;
                 const aligned_length = std.mem.alignForward(usize, length, 4);
-                reader.skipBytes(aligned_length, .{}) catch return error.InvalidAttribute;
+                reader.discardAll(aligned_length) catch return error.InvalidAttribute;
+                read += 4 + aligned_length;
             }
 
             const algorithms = try allocator.alloc(auth.Algorithm, algorithms_count);
             errdefer allocator.free(algorithms);
 
-            stream.reset();
+            reader = std.Io.Reader.fixed(attribute.data);
             for (algorithms) |*algorithm| {
-                const raw_type = reader.readInt(u16, .big) catch return error.InvalidAttribute;
-                const length = reader.readInt(u16, .big) catch return error.InvalidAttribute;
+                const raw_type = reader.takeInt(u16, .big) catch return error.InvalidAttribute;
+                const length = reader.takeInt(u16, .big) catch return error.InvalidAttribute;
                 const aligned_length = std.mem.alignForward(usize, length, 4);
                 algorithm.type = @enumFromInt(raw_type);
-                algorithm.parameters = stream.buffer[stream.pos .. stream.pos + length];
-                reader.skipBytes(aligned_length, .{}) catch return error.InvalidAttribute;
+                algorithm.parameters = reader.take(length) catch return error.InvalidAttribute;
+                reader.discardAll(aligned_length) catch return error.InvalidAttribute;
             }
 
             return PasswordAlgorithms{ .algorithms = algorithms };
@@ -530,13 +524,12 @@ pub const common = struct {
             const data = try allocator.alloc(u8, data_size);
             errdefer allocator.free(data);
 
-            var stream = std.io.fixedBufferStream(data);
-            var writer = stream.writer();
+            var writer = std.Io.Writer.fixed(data);
 
             for (self.algorithms) |algorithm| {
                 writer.writeInt(u16, @intFromEnum(algorithm.type), .big) catch unreachable;
                 writer.writeInt(u16, @as(u16, @intCast(algorithm.parameters.len)), .big) catch unreachable;
-                io.writeAllAligned(algorithm.parameters, 4, writer) catch unreachable;
+                io.writeAllAligned(algorithm.parameters, 4, &writer) catch unreachable;
             }
 
             return Attribute{ .type = Type.password_algorithms, .data = data };
@@ -550,17 +543,16 @@ pub const common = struct {
         pub fn fromAttribute(attribute: Attribute) ConversionError!PasswordAlgorithm {
             if (attribute.type != Type.password_algorithm) return error.InvalidAttribute;
 
-            var stream = std.io.fixedBufferStream(attribute.data);
-            var reader = stream.reader();
+            var reader = std.Io.Reader.fixed(attribute.data);
 
-            const raw_type = reader.readInt(u16, .big) catch return error.InvalidAttribute;
-            const length = reader.readInt(u16, .big) catch return error.InvalidAttribute;
+            const raw_type = reader.takeInt(u16, .big) catch return error.InvalidAttribute;
+            const length = reader.takeInt(u16, .big) catch return error.InvalidAttribute;
             const aligned_length = std.mem.alignForward(usize, length, 4);
             const algorithm = auth.Algorithm{
                 .type = @enumFromInt(raw_type),
-                .parameters = stream.buffer[stream.pos .. stream.pos + length],
+                .parameters = reader.take(length) catch return error.InvalidAttribute,
             };
-            reader.skipBytes(aligned_length, .{}) catch return error.InvalidAttribute;
+            reader.discardAll(aligned_length) catch return error.InvalidAttribute;
 
             return PasswordAlgorithm{ .algorithm = algorithm };
         }
@@ -569,12 +561,11 @@ pub const common = struct {
             const data = try allocator.alloc(u8, 4 + std.mem.alignForward(usize, self.algorithm.parameters.len, 4));
             errdefer allocator.free(data);
 
-            var stream = std.io.fixedBufferStream(data);
-            var writer = stream.writer();
+            var writer = std.Io.Writer.fixed(data);
 
             writer.writeInt(u16, @intFromEnum(self.algorithm.type), .big) catch unreachable;
             writer.writeInt(u16, @as(u16, @intCast(self.algorithm.parameters.len)), .big) catch unreachable;
-            io.writeAllAligned(self.algorithm.parameters, 4, writer) catch unreachable;
+            io.writeAllAligned(self.algorithm.parameters, 4, &writer) catch unreachable;
 
             return Attribute{ .type = Type.password_algorithm, .data = data };
         }
@@ -590,11 +581,10 @@ pub const common = struct {
             const attribute_types = try allocator.alloc(u16, attribute.data.len / 2);
             errdefer allocator.free(attribute_types);
 
-            var stream = std.io.fixedBufferStream(attribute.data);
-            var reader = stream.reader();
+            var reader = std.Io.Reader.fixed(attribute.data);
 
             for (attribute_types) |*attribute_type| {
-                attribute_type.* = reader.readInt(u16, .big) catch return error.InvalidAttribute;
+                attribute_type.* = reader.takeInt(u16, .big) catch return error.InvalidAttribute;
             }
 
             return UnknownAttributes{ .attribute_types = attribute_types };
@@ -604,8 +594,7 @@ pub const common = struct {
             const data = try allocator.alloc(u8, self.attribute_types.len * 2);
             errdefer allocator.free(data);
 
-            var stream = std.io.fixedBufferStream(data);
-            var writer = stream.writer();
+            var writer = std.Io.Writer.fixed(data);
 
             for (self.attribute_types) |attribute_type| {
                 writer.writeInt(u16, attribute_type, .big) catch unreachable;
@@ -638,19 +627,20 @@ pub const common = struct {
         pub fn fromAttribute(attribute: Attribute) ConversionError!AlternateServer {
             if (attribute.type != Type.alternate_server) return error.InvalidAttribute;
 
-            var stream = std.io.fixedBufferStream(attribute.data);
-            var reader = stream.reader();
-            _ = try reader.readByte();
-            const raw_family_type = reader.readByte() catch return error.InvalidAttribute;
+            var reader = std.Io.Reader.fixed(attribute.data);
+            _ = try reader.takeByte();
+            const raw_family_type = reader.takeByte() catch return error.InvalidAttribute;
             const family_type = std.meta.intToEnum(AddressFamilyType, raw_family_type) catch return error.InvalidAttribute;
-            const port: u16 = reader.readInt(u16, .big) catch return error.InvalidAttribute;
+            const port: u16 = reader.takeInt(u16, .big) catch return error.InvalidAttribute;
             switch (family_type) {
                 .ipv4 => {
-                    const raw_address = reader.readBytesNoEof(4) catch return error.InvalidAttribute;
+                    var raw_address: [4]u8 = undefined;
+                    reader.readSliceAll(&raw_address) catch return error.InvalidAttribute;
                     return AlternateServer{ .family = .{ .ipv4 = raw_address }, .port = port };
                 },
                 .ipv6 => {
-                    const raw_address = reader.readBytesNoEof(16) catch return error.InvalidAttribute;
+                    var raw_address: [16]u8 = undefined;
+                    reader.readSliceAll(&raw_address) catch return error.InvalidAttribute;
                     return AlternateServer{ .family = .{ .ipv6 = raw_address }, .port = port };
                 },
             }
@@ -664,8 +654,7 @@ pub const common = struct {
             const data = try allocator.alloc(u8, data_size);
             errdefer allocator.free(data);
 
-            var stream = std.io.fixedBufferStream(data);
-            var writer = stream.writer();
+            var writer = std.Io.Writer.fixed(data);
             writer.writeByte(0) catch unreachable;
             writer.writeByte(@intFromEnum(self.family)) catch unreachable;
             writer.writeInt(u16, self.port, .big) catch unreachable;
@@ -700,9 +689,8 @@ pub const common = struct {
         pub fn fromAttribute(attribute: Attribute) ConversionError!Priority {
             if (attribute.type != Type.priority) return error.InvalidAttribute;
 
-            var stream = std.io.fixedBufferStream(attribute.data);
-            var reader = stream.reader();
-            const value = reader.readInt(u32, .big) catch return error.InvalidAttribute;
+            var reader = std.Io.Reader.fixed(attribute.data);
+            const value = reader.takeInt(u32, .big) catch return error.InvalidAttribute;
             return Priority{ .value = value };
         }
 
@@ -710,8 +698,7 @@ pub const common = struct {
             const data = try allocator.alloc(u8, 4);
             errdefer allocator.free(data);
 
-            var stream = std.io.fixedBufferStream(data);
-            var writer = stream.writer();
+            var writer = std.Io.Writer.fixed(data);
             writer.writeInt(u32, self.value, .big) catch unreachable;
 
             return Attribute{ .type = Type.priority, .data = data };
@@ -739,9 +726,8 @@ pub const common = struct {
         pub fn fromAttribute(attribute: Attribute) ConversionError!IceControlled {
             if (attribute.type != Type.ice_controlled) return error.InvalidAttribute;
 
-            var stream = std.io.fixedBufferStream(attribute.data);
-            var reader = stream.reader();
-            const value = reader.readInt(u64, .big) catch return error.InvalidAttribute;
+            var reader = std.Io.Reader.fixed(attribute.data);
+            const value = reader.takeInt(u64, .big) catch return error.InvalidAttribute;
             return IceControlled{ .value = value };
         }
 
@@ -749,8 +735,7 @@ pub const common = struct {
             const data = try allocator.alloc(u8, 8);
             errdefer allocator.free(data);
 
-            var stream = std.io.fixedBufferStream(data);
-            var writer = stream.writer();
+            var writer = std.Io.Writer.fixed(data);
             writer.writeInt(u64, self.value, .big) catch unreachable;
 
             return Attribute{ .type = Type.ice_controlled, .data = data };
@@ -764,9 +749,8 @@ pub const common = struct {
         pub fn fromAttribute(attribute: Attribute) ConversionError!IceControlling {
             if (attribute.type != Type.ice_controlling) return error.InvalidAttribute;
 
-            var stream = std.io.fixedBufferStream(attribute.data);
-            var reader = stream.reader();
-            const value = reader.readInt(u64, .big) catch return error.InvalidAttribute;
+            var reader = std.Io.Reader.fixed(attribute.data);
+            const value = reader.takeInt(u64, .big) catch return error.InvalidAttribute;
             return IceControlling{ .value = value };
         }
 
@@ -774,8 +758,7 @@ pub const common = struct {
             const data = try allocator.alloc(u8, 8);
             errdefer allocator.free(data);
 
-            var stream = std.io.fixedBufferStream(data);
-            var writer = stream.writer();
+            var writer = std.Io.Writer.fixed(data);
             writer.writeInt(u64, self.value, .big) catch unreachable;
 
             return Attribute{ .type = Type.ice_controlling, .data = data };
@@ -798,8 +781,8 @@ test "MAPPED-ADDRESS deserialization" {
         127,  0,
         0,    1,
     };
-    var stream = std.io.fixedBufferStream(&buffer);
-    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    var reader = std.Io.Reader.fixed(&buffer);
+    const attribute = try readAlloc(&reader, std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const mapped_address_attribute = try common.MappedAddress.fromAttribute(attribute);
@@ -825,8 +808,8 @@ test "XOR-MAPPED-ADDRESS deserialization" {
         0xA4, 0x43,
     };
 
-    var stream = std.io.fixedBufferStream(&buffer);
-    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    var reader = std.Io.Reader.fixed(&buffer);
+    const attribute = try readAlloc(&reader, std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const xor_mapped_address_attribute = try common.XorMappedAddress.fromAttribute(attribute);
@@ -855,8 +838,8 @@ test "USERNAME deserialization" {
         @as(u8, 'n'),
     };
 
-    var stream = std.io.fixedBufferStream(&buffer);
-    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    var reader = std.Io.Reader.fixed(&buffer);
+    const attribute = try readAlloc(&reader, std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const username_attribute = try common.Username.fromAttribute(attribute);
@@ -906,8 +889,8 @@ test "USERHASH deserialization" {
         @as(u8, 'f'),
     };
 
-    var stream = std.io.fixedBufferStream(&buffer);
-    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    var reader = std.Io.Reader.fixed(&buffer);
+    const attribute = try readAlloc(&reader, std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     var userhash_attribute = try common.Userhash.fromAttribute(attribute);
@@ -969,8 +952,8 @@ test "MESSAGE-INTEGRITY deserialization" {
         0x3e,
         0xa4,
     };
-    var stream = std.io.fixedBufferStream(&buffer);
-    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    var reader = std.Io.Reader.fixed(&buffer);
+    const attribute = try readAlloc(&reader, std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const message_integrity_attribute = try common.MessageIntegrity.fromAttribute(attribute);
@@ -1031,8 +1014,8 @@ test "MESSAGE-INTEGRITY-SHA256 deserialization" {
         0xee,
         0xec,
     };
-    var stream = std.io.fixedBufferStream(&buffer);
-    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    var reader = std.Io.Reader.fixed(&buffer);
+    const attribute = try readAlloc(&reader, std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const message_integrity_sha256_attribute = try common.MessageIntegritySha256.fromAttribute(attribute);
@@ -1053,8 +1036,8 @@ test "FINGERPRINT deserialization" {
         0x03,
         0x04,
     };
-    var stream = std.io.fixedBufferStream(&buffer);
-    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    var reader = std.Io.Reader.fixed(&buffer);
+    const attribute = try readAlloc(&reader, std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const fingerprint_attribute = try common.Fingerprint.fromAttribute(attribute);
@@ -1076,8 +1059,8 @@ test "ERROR-CODE deserialization" {
         20,
     } ++ "reason" ++ [_]u8{ 0, 0 };
 
-    var stream = std.io.fixedBufferStream(buffer);
-    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    var reader = std.Io.Reader.fixed(buffer);
+    const attribute = try readAlloc(&reader, std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const error_code_attribute = try common.ErrorCode.fromAttribute(attribute);
@@ -1104,8 +1087,8 @@ test "REALM deserialization" {
         0,
         0,
     };
-    var stream = std.io.fixedBufferStream(&buffer);
-    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    var reader = std.Io.Reader.fixed(&buffer);
+    const attribute = try readAlloc(&reader, std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const realm_attribute = try common.Realm.fromAttribute(attribute);
@@ -1131,8 +1114,8 @@ test "NONCE deserialization" {
         0,
         0,
     };
-    var stream = std.io.fixedBufferStream(&buffer);
-    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    var reader = std.Io.Reader.fixed(&buffer);
+    const attribute = try readAlloc(&reader, std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const nonce_attribute = try common.Nonce.fromAttribute(attribute);
@@ -1158,8 +1141,8 @@ test "PASSWORD-ALGORITHMS deserialization" {
         // Empty parameters
     };
 
-    var stream = std.io.fixedBufferStream(&buffer);
-    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    var reader = std.Io.Reader.fixed(&buffer);
+    const attribute = try readAlloc(&reader, std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const password_algorithms_attribute = try common.PasswordAlgorithms.fromAttribute(attribute, std.testing.allocator);
@@ -1185,8 +1168,8 @@ test "PASSWORD-ALGORITHM deserialization" {
         // Empty parameters
     };
 
-    var stream = std.io.fixedBufferStream(&buffer);
-    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    var reader = std.Io.Reader.fixed(&buffer);
+    const attribute = try readAlloc(&reader, std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const password_algorithm_attribute = try common.PasswordAlgorithm.fromAttribute(attribute);
@@ -1210,8 +1193,8 @@ test "UNKNOWN-ATTRIBUTES deserialization" {
         0x00, 0x00,
     };
 
-    var stream = std.io.fixedBufferStream(&buffer);
-    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    var reader = std.Io.Reader.fixed(&buffer);
+    const attribute = try readAlloc(&reader, std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const unknown_attributes_attribute = try common.UnknownAttributes.fromAttribute(attribute, std.testing.allocator);
@@ -1240,8 +1223,8 @@ test "SOFTWARE deserialization" {
         @as(u8, 'r'),
         @as(u8, 'e'),
     };
-    var stream = std.io.fixedBufferStream(&buffer);
-    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    var reader = std.Io.Reader.fixed(&buffer);
+    const attribute = try readAlloc(&reader, std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const software_attribute = try common.Software.fromAttribute(attribute);
@@ -1264,8 +1247,8 @@ test "ALTERNATE-SERVER deserialization" {
         127,  0,
         0,    1,
     };
-    var stream = std.io.fixedBufferStream(&buffer);
-    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    var reader = std.Io.Reader.fixed(&buffer);
+    const attribute = try readAlloc(&reader, std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const alternate_server_attribute = try common.AlternateServer.fromAttribute(attribute);
@@ -1293,8 +1276,8 @@ test "ALTERNATE-DOMAIN deserialization" {
         // Padding
         0,
     };
-    var stream = std.io.fixedBufferStream(&buffer);
-    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    var reader = std.Io.Reader.fixed(&buffer);
+    const attribute = try readAlloc(&reader, std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const alternate_domain_attribute = try common.AlternateDomain.fromAttribute(attribute);
@@ -1311,8 +1294,8 @@ test "PRIORITY deserialization" {
         0x01, 0x02,
         0x03, 0x04,
     };
-    var stream = std.io.fixedBufferStream(&buffer);
-    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    var reader = std.Io.Reader.fixed(&buffer);
+    const attribute = try readAlloc(&reader, std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const priority_attribute = try common.Priority.fromAttribute(attribute);
@@ -1326,8 +1309,8 @@ test "USE-CANDIDATE deserialization" {
         0x00, 0x25,
         0x00, 0x00,
     };
-    var stream = std.io.fixedBufferStream(&buffer);
-    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    var reader = std.Io.Reader.fixed(&buffer);
+    const attribute = try readAlloc(&reader, std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     _ = try common.UseCandidate.fromAttribute(attribute);
@@ -1344,8 +1327,8 @@ test "ICE-CONTROLLED deserialization" {
         0x05, 0x06,
         0x07, 0x08,
     };
-    var stream = std.io.fixedBufferStream(&buffer);
-    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    var reader = std.Io.Reader.fixed(&buffer);
+    const attribute = try readAlloc(&reader, std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const ice_controlled_attribute = try common.IceControlled.fromAttribute(attribute);
@@ -1364,8 +1347,8 @@ test "ICE-CONTROLLING deserialization" {
         0x05, 0x06,
         0x07, 0x08,
     };
-    var stream = std.io.fixedBufferStream(&buffer);
-    const attribute = try readAlloc(stream.reader(), std.testing.allocator);
+    var reader = std.Io.Reader.fixed(&buffer);
+    const attribute = try readAlloc(&reader, std.testing.allocator);
     defer std.testing.allocator.free(attribute.data);
 
     const ice_controlling_attribute = try common.IceControlling.fromAttribute(attribute);
@@ -1375,8 +1358,8 @@ test "ICE-CONTROLLING deserialization" {
 
 test "AddressFamily formatting" {
     const ipv4 = common.AddressFamily{ .ipv4 = [_]u8{ 127, 0, 0, 1 } };
-    try std.testing.expectFmt("127.0.0.1", "{}", .{ipv4});
+    try std.testing.expectFmt("127.0.0.1", "{f}", .{ipv4});
 
     const ipv6 = common.AddressFamily{ .ipv6 = [_]u8{ 0x2a, 0x01, 0x0e, 0x0a, 0x08, 0x47, 0x64, 0x90, 0x60, 0x01, 0x31, 0xcd, 0xb2, 0xf8, 0x45, 0x37 } };
-    try std.testing.expectFmt("2a01:0e0a:0847:6490:6001:31cd:b2f8:4537", "{}", .{ipv6});
+    try std.testing.expectFmt("2a01:0e0a:0847:6490:6001:31cd:b2f8:4537", "{f}", .{ipv6});
 }

@@ -2,14 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 const std = @import("std");
+
+const ztun = @import("../ztun.zig");
+const attr = @import("attributes.zig");
+const constants = @import("constants.zig");
+const fmt = @import("fmt.zig");
+
 const Self = @This();
 
-const attr = @import("attributes.zig");
-const ztun = @import("../ztun.zig");
-const fmt = @import("fmt.zig");
-const constants = @import("constants.zig");
-
-const software_version_attribute = attr.common.Software{ .value = std.fmt.comptimePrint("ztun v{}", .{constants.version}) };
+const software_version_attribute = attr.common.Software{ .value = std.fmt.comptimePrint("ztun v{f}", .{constants.version}) };
 
 const log = std.log.scoped(.ztun);
 
@@ -31,7 +32,7 @@ pub const Error = error{
     MethodNotAllowedForClass,
     InvalidFingerprint,
     UnknownTransaction,
-} || ztun.MessageBuilder.Error || std.mem.Allocator.Error;
+} || ztun.auth.ComputeKeyAllocError || ztun.MessageBuilder.Error || std.mem.Allocator.Error;
 
 const Address = union(enum) {
     ipv4: std.net.Ip4Address,
@@ -218,13 +219,13 @@ fn isUnknownAttribute(value: u16) bool {
 /// Returns the list of unknown attributes or null if they are all known.
 fn lookForUnknownAttributes(allocator: std.mem.Allocator, message: ztun.Message) error{OutOfMemory}!?[]u16 {
     var comprehension_required_unknown_attributes = try std.ArrayList(u16).initCapacity(allocator, message.attributes.len);
-    defer comprehension_required_unknown_attributes.deinit();
+    defer comprehension_required_unknown_attributes.deinit(allocator);
 
     for (message.attributes) |a| if (isUnknownAttribute(a.type) and attr.isComprehensionRequired(a.type)) {
         comprehension_required_unknown_attributes.appendAssumeCapacity(a.type);
     };
 
-    return if (comprehension_required_unknown_attributes.items.len == 0) null else try comprehension_required_unknown_attributes.toOwnedSlice();
+    return if (comprehension_required_unknown_attributes.items.len == 0) null else try comprehension_required_unknown_attributes.toOwnedSlice(allocator);
 }
 
 /// Returns a STUN message representing a Bad Request response_error.
@@ -774,12 +775,13 @@ pub fn registerShortTermUser(self: *Self, username: []const u8, password: []cons
 /// Computes the Userhash associated with the given parameters and tries to place the result in the given buffer.
 /// Returns the amount of bytes written.
 fn computeUserhash(username: []const u8, realm: []const u8, out: []u8) !usize {
-    var sha256_stream = ztun.io.Sha256Stream.init();
-    var sha256_writer = sha256_stream.writer();
-    try ztun.io.writeOpaqueString(username, sha256_writer);
-    try sha256_writer.writeByte(':');
-    try ztun.io.writeOpaqueString(realm, sha256_writer);
-    sha256_writer.context.state.final(out[0..std.crypto.hash.sha2.Sha256.digest_length]);
+    var buffer: [256]u8 = undefined;
+    var sha256_writer = ztun.io.Sha256Writer.init(&buffer);
+    try ztun.io.writeOpaqueString(username, &sha256_writer.writer);
+    try sha256_writer.writer.writeByte(':');
+    try ztun.io.writeOpaqueString(realm, &sha256_writer.writer);
+    try sha256_writer.writer.flush();
+    sha256_writer.hasher.final(out[0..std.crypto.hash.sha2.Sha256.digest_length]);
     return std.crypto.hash.sha2.Sha256.digest_length;
 }
 

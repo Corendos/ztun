@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 const std = @import("std");
-const ztun = @import("ztun");
-const utils = @import("utils/utils.zig");
-
 const linux = std.os.linux;
+
+const ztun = @import("ztun");
+
+const utils = @import("utils/utils.zig");
 
 pub fn main() anyerror!void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -41,10 +42,9 @@ pub fn main() anyerror!void {
     defer initial_request.deinit(allocator);
 
     const raw_initial_request = b: {
-        var stream = std.io.fixedBufferStream(buffer);
-        const writer = stream.writer();
-        try initial_request.write(writer);
-        break :b stream.getWritten();
+        var writer = std.Io.Writer.fixed(buffer);
+        try initial_request.write(&writer);
+        break :b writer.buffered();
     };
 
     // Send the initial request
@@ -54,13 +54,13 @@ pub fn main() anyerror!void {
     var source: std.net.Address = undefined;
     const raw_initial_response = try utils.receiveFrom(socket, buffer, &source);
     const initial_response: ztun.Message = blk: {
-        var stream = std.io.fixedBufferStream(raw_initial_response);
-        break :blk try ztun.Message.readAlloc(allocator, stream.reader());
+        var reader = std.Io.Reader.fixed(raw_initial_response);
+        break :blk try ztun.Message.readAlloc(allocator, &reader);
     };
     defer initial_response.deinit(allocator);
 
     // Print a human-readable description of the initial response.
-    std.log.info("{}", .{ztun.fmt.messageFormatter(initial_response)});
+    std.log.info("{f}", .{initial_response});
 
     // Retrieve the Nonce from the initial response.
     const nonce_value = for (initial_response.attributes) |a| {
@@ -108,10 +108,9 @@ pub fn main() anyerror!void {
     defer subsequent_request.deinit(allocator);
 
     const raw_subsequent_request = b: {
-        var stream = std.io.fixedBufferStream(buffer);
-        const writer = stream.writer();
-        try subsequent_request.write(writer);
-        break :b stream.getWritten();
+        var writer = std.Io.Writer.fixed(buffer);
+        try subsequent_request.write(&writer);
+        break :b writer.buffered();
     };
 
     // Send the subsequent request
@@ -120,11 +119,11 @@ pub fn main() anyerror!void {
     // Receive the subsequent response
     const raw_subsequent_response = try utils.receiveFrom(socket, buffer, &source);
     const subsequent_response: ztun.Message = blk: {
-        var stream = std.io.fixedBufferStream(raw_subsequent_response);
-        break :blk try ztun.Message.readAlloc(allocator, stream.reader());
+        var reader = std.Io.Reader.fixed(raw_subsequent_response);
+        break :blk try ztun.Message.readAlloc(allocator, &reader);
     };
     defer subsequent_response.deinit(allocator);
 
     // Print a human-readable description of the subsequent response.
-    std.log.info("{}", .{ztun.fmt.messageFormatter(subsequent_response)});
+    std.log.info("{f}", .{subsequent_response});
 }

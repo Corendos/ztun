@@ -14,7 +14,7 @@ pub fn build(b: *std.Build) !void {
     const build_samples = b.option(bool, "build_samples", "Build and install samples exes") orelse false;
 
     // Modules available to downstream dependencies
-    _ = b.addModule("ztun", .{
+    const module = b.addModule("ztun", .{
         .target = target,
         .optimize = optimize,
         .root_source_file = b.path("src/ztun.zig"),
@@ -23,9 +23,7 @@ pub fn build(b: *std.Build) !void {
     const samples = try buildSamples(b, target, optimize);
 
     const ztun_tests = b.addTest(.{
-        .root_source_file = b.path("src/ztun.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = module,
     });
     const ztun_tests_run = b.addRunArtifact(ztun_tests);
     if (install_tests) b.installArtifact(ztun_tests);
@@ -43,11 +41,11 @@ fn buildSamples(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
 ) ![]const *Step.Compile {
-    var steps = std.ArrayList(*Step.Compile).init(b.allocator);
-    defer steps.deinit();
+    var steps: std.ArrayList(*Step.Compile) = .empty;
+    defer steps.deinit(b.allocator);
 
     const path = try b.build_root.join(b.allocator, &[_][]const u8{"samples"});
-    var dir = try std.fs.cwd().openDir(path, .{ .iterate = true});
+    var dir = try std.fs.cwd().openDir(path, .{ .iterate = true });
     defer dir.close();
 
     var it = dir.iterate();
@@ -58,17 +56,21 @@ fn buildSamples(
 
         const sample_name = std.fs.path.stem(entry.name);
 
-        const sample_exe = b.addExecutable(.{
-            .name = sample_name,
+        const sample_module = b.addModule(sample_name, .{
             .root_source_file = b.path(b.fmt("samples/{s}", .{entry.name})),
             .optimize = optimize,
             .target = target,
         });
+
+        const sample_exe = b.addExecutable(.{
+            .name = sample_name,
+            .root_module = sample_module,
+        });
         sample_exe.root_module.addImport("ztun", b.modules.get("ztun").?);
         sample_exe.linkLibC();
 
-        try steps.append(sample_exe);
+        try steps.append(b.allocator, sample_exe);
     }
 
-    return steps.toOwnedSlice();
+    return steps.toOwnedSlice(b.allocator);
 }

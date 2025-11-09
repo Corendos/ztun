@@ -2,8 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 const std = @import("std");
-const io = @import("io.zig");
+
 const attr = @import("attributes.zig");
+const io = @import("io.zig");
+pub const ComputeKeyError = io.WriteOpaqueStringError;
+
+pub const ComputeKeyAllocError = ComputeKeyError || std.mem.Allocator.Error;
 
 /// Stores the parameter required for the Short-term authentication mechanism.
 pub const ShortTermAuthenticationParameters = struct {
@@ -12,15 +16,15 @@ pub const ShortTermAuthenticationParameters = struct {
 
     /// Computes the authentication key corresponding to the stored parameters and tries to place the result in the given buffer.
     /// Returns the amount of bytes written.
-    pub fn computeKey(self: ShortTermAuthenticationParameters, out: []u8) !usize {
-        var stream = std.io.fixedBufferStream(out);
-        try io.writeOpaqueString(self.password, stream.writer());
-        return stream.getWritten().len;
+    pub fn computeKey(self: ShortTermAuthenticationParameters, out: []u8) ComputeKeyError!usize {
+        var writer = std.Io.Writer.fixed(out);
+        try io.writeOpaqueString(self.password, &writer);
+        return writer.buffered().len;
     }
 
     /// Computes the authentication key corresponding to the stored parameters and tries to allocate the required buffer.
     /// Returns the buffer containing the computed key.
-    pub fn computeKeyAlloc(self: ShortTermAuthenticationParameters, allocator: std.mem.Allocator) ![]u8 {
+    pub fn computeKeyAlloc(self: ShortTermAuthenticationParameters, allocator: std.mem.Allocator) ComputeKeyAllocError![]u8 {
         const buffer = try allocator.alloc(u8, self.password.len * 2);
         errdefer allocator.free(buffer);
         const bytes_written = try self.computeKey(buffer);
@@ -61,28 +65,29 @@ pub const LongTermAuthenticationParameters = struct {
 
     /// Computes the authentication key corresponding to the stored parameters and tries to place the result in the given buffer.
     /// Returns the amount of bytes written.
-    pub fn computeKey(self: LongTermAuthenticationParameters, algorithm: Algorithm, out: []u8) !usize {
+    pub fn computeKey(self: LongTermAuthenticationParameters, algorithm: Algorithm, out: []u8) ComputeKeyError!usize {
+        var buffer: [256]u8 = undefined;
         return switch (algorithm.type) {
             .md5 => b: {
-                var md5_stream = io.Md5Stream.init();
-                var md5_writer = md5_stream.writer();
-                try md5_writer.writeAll(self.username);
-                try md5_writer.writeByte(':');
-                try io.writeOpaqueString(self.realm, md5_writer);
-                try md5_writer.writeByte(':');
-                try io.writeOpaqueString(self.password, md5_writer);
-                md5_writer.context.state.final(out[0..std.crypto.hash.Md5.digest_length]);
+                var md5_writer = io.Md5Writer.init(&buffer);
+                try md5_writer.writer.writeAll(self.username);
+                try md5_writer.writer.writeByte(':');
+                try io.writeOpaqueString(self.realm, &md5_writer.writer);
+                try md5_writer.writer.writeByte(':');
+                try io.writeOpaqueString(self.password, &md5_writer.writer);
+                try md5_writer.writer.flush();
+                md5_writer.hasher.final(out[0..std.crypto.hash.Md5.digest_length]);
                 break :b std.crypto.hash.Md5.digest_length;
             },
             .sha256 => b: {
-                var sha256_stream = io.Sha256Stream.init();
-                var sha256_writer = sha256_stream.writer();
-                try sha256_writer.writeAll(self.username);
-                try sha256_writer.writeByte(':');
-                try io.writeOpaqueString(self.realm, sha256_writer);
-                try sha256_writer.writeByte(':');
-                try io.writeOpaqueString(self.password, sha256_writer);
-                sha256_writer.context.state.final(out[0..std.crypto.hash.sha2.Sha256.digest_length]);
+                var sha256_writer = io.Sha256Writer.init(&buffer);
+                try sha256_writer.writer.writeAll(self.username);
+                try sha256_writer.writer.writeByte(':');
+                try io.writeOpaqueString(self.realm, &sha256_writer.writer);
+                try sha256_writer.writer.writeByte(':');
+                try io.writeOpaqueString(self.password, &sha256_writer.writer);
+                try sha256_writer.writer.flush();
+                sha256_writer.hasher.final(out[0..std.crypto.hash.sha2.Sha256.digest_length]);
                 break :b std.crypto.hash.sha2.Sha256.digest_length;
             },
             _ => unreachable,
@@ -91,7 +96,7 @@ pub const LongTermAuthenticationParameters = struct {
 
     /// Computes the authentication key corresponding to the stored parameters and tries to allocate the required buffer.
     /// Returns the buffer containing the computed key.
-    pub fn computeKeyAlloc(self: LongTermAuthenticationParameters, allocator: std.mem.Allocator, algorithm: Algorithm) ![]u8 {
+    pub fn computeKeyAlloc(self: LongTermAuthenticationParameters, allocator: std.mem.Allocator, algorithm: Algorithm) ComputeKeyAllocError![]u8 {
         const alloc_size: usize = switch (algorithm.type) {
             .md5 => std.crypto.hash.Md5.digest_length,
             .sha256 => std.crypto.hash.sha2.Sha256.digest_length,
