@@ -44,20 +44,22 @@ fn buildSamples(
     var steps: std.ArrayList(*Step.Compile) = .empty;
     defer steps.deinit(b.allocator);
 
-    const path = try b.build_root.join(b.allocator, &[_][]const u8{"samples"});
-    var dir = try std.fs.cwd().openDir(path, .{ .iterate = true });
-    defer dir.close();
+    const samples = [_][]const u8{
+        "long_term_client.zig",
+        "long_term_server.zig",
+        "short_term_client.zig",
+        "short_term_server.zig",
+        "simple_client.zig",
+        "simple_server.zig",
+    };
 
-    var it = dir.iterate();
-    while (try it.next()) |entry| {
-        if (entry.kind != .file) continue;
-        const extension = std.fs.path.extension(entry.name);
-        if (!std.mem.eql(u8, extension, ".zig")) continue;
+    for (samples) |sample| {
+        const sample_name = std.fs.path.stem(sample);
 
-        const sample_name = std.fs.path.stem(entry.name);
+        const sample_path = try std.fs.path.join(b.allocator, &.{ "samples", sample });
 
         const sample_module = b.addModule(sample_name, .{
-            .root_source_file = b.path(b.fmt("samples/{s}", .{entry.name})),
+            .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = sample_path } },
             .optimize = optimize,
             .target = target,
         });
@@ -67,7 +69,6 @@ fn buildSamples(
             .root_module = sample_module,
         });
         sample_exe.root_module.addImport("ztun", b.modules.get("ztun").?);
-        sample_exe.linkLibC();
 
         try steps.append(b.allocator, sample_exe);
     }

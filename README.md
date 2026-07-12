@@ -40,11 +40,13 @@ The simplest way you can use `ztun` is by using it's STUN message building capab
 const ztun = @import("ztun");
 
 var builder = ztun.MessageBuilder.init(allocator);
-defer builder.deinit(allocator);
+defer builder.deinit();
+
+var generator: std.Random.DefaultPrng = .init(@intCast(std.Io.Timestamp.now(io, .boot).toMicroseconds()));
 
 builder.setClass(ztun.Class.request);
 builder.setMethod(ztun.Method.binding);
-builder.randomTransactionId();
+builder.randomTransactionId(generator.random());
 builder.addFingerprint();
 
 const message = try builder.build();
@@ -60,16 +62,18 @@ For example, let's say you want to add a `SOFTWARE` attribute to a STUN message,
 const ztun = @import("ztun");
 
 var builder = ztun.MessageBuilder.init(allocator);
-defer builder.deinit(allocator);
+defer builder.deinit();
+
+var generator: std.Random.DefaultPrng = .init(@intCast(std.Io.Timestamp.now(io, .boot).toMicroseconds()));
 
 builder.setClass(ztun.Class.request);
 builder.setMethod(ztun.Method.binding);
-builder.randomTransactionId();
+builder.randomTransactionId(generator.random());
 
 const software_attribute = ztun.attr.common.Software{ .value = "My software name" };
-const raw_software_attribute = software_attribute.toAttribute(allocator);
+const raw_software_attribute = try software_attribute.toAttribute(allocator);
 errdefer allocator.free(raw_software_attribute.data);
-builder.addAttribute(raw_software_attribute);
+try builder.addAttribute(raw_software_attribute);
 
 builder.addFingerprint();
 
@@ -86,9 +90,9 @@ const ztun = @import("ztun");
 
 var server = ztun.Server.init(allocator, ztun.Server.Options{
         // The authentication type to use, valid enums are .none, .short_term and .long_term.
-        .authentication_type = .none
+        .authentication_type = .none,
         // (For Long-Term authentication only) The realm to use to authenticate users.
-        .realm = "default"
+        .realm = "default",
         // (For Long-Term authentication only) The supported password algorithms
         .algorithms = &.{
             .{ .type = ztun.auth.AlgorithmType.md5, .parameters = &.{} },
@@ -98,15 +102,15 @@ var server = ztun.Server.init(allocator, ztun.Server.Options{
 defer server.deinit();
 
 try server.registerShortTermUser("user", "password");
-try server.registerLongTermUser("user". "password");
+try server.registerLongTermUser("user", "password");
 
-const message_source: std.net.Address = ...; // The source IP that sent the message.
+const message_source: std.Io.net.IpAddress = ...; // The source IP that sent the message.
 const raw_message = ...; // Read a message from the data transport.
 var reader = std.Io.Reader.fixed(raw_message);
 const message = try ztun.Message.readAlloc(allocator, &reader);
 defer message.deinit(allocator);
 
-const result = server.handleMessage(allocator, message, message_source);
+const result = server.handleMessage(io, allocator, message, message_source);
 switch (result) {
     .ok => {
         // Nothing to do.
@@ -123,7 +127,7 @@ switch (result) {
 Samples are available in the [`samples`](samples/) subfolder if you want to have a better overview.
 
 ## Supported zig version
-`0.15.2`
+`0.16.0`
 
 ## License
 

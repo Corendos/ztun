@@ -7,18 +7,16 @@ const ztun = @import("ztun");
 
 const utils = @import("utils/utils.zig");
 
-pub fn handleMessage(allocator: std.mem.Allocator, socket: std.posix.socket_t, server: *ztun.Server, buffer: []u8) !void {
-    // Receive the message in the previously allocated buffer.
-    var source: std.net.Address = undefined;
-    const raw_message = try utils.receiveFrom(socket, buffer, &source);
+pub fn handleMessage(io: std.Io, allocator: std.mem.Allocator, socket: std.Io.net.Socket, server: *ztun.Server, buffer: []u8) !void {
+    const raw_message = try socket.receive(io, buffer);
 
     const message = blk: {
-        var reader = std.Io.Reader.fixed(raw_message);
+        var reader = std.Io.Reader.fixed(raw_message.data);
         break :blk try ztun.Message.readAlloc(allocator, &reader);
     };
     defer message.deinit(allocator);
 
-    const message_result = try server.handleMessage(allocator, message, source);
+    const message_result = try server.handleMessage(io, allocator, message, raw_message.from);
     // Process the message and return the response if there is one to send.
     switch (message_result) {
         .ok => {},
@@ -26,29 +24,24 @@ pub fn handleMessage(allocator: std.mem.Allocator, socket: std.posix.socket_t, s
         .response => |response| {
             var writer = std.Io.Writer.fixed(buffer);
             try response.write(&writer);
-            _ = try utils.sendTo(socket, writer.buffered(), source);
+            try socket.send(io, &raw_message.from, writer.buffered());
             response.deinit(allocator);
         },
     }
 }
 
-pub fn main() anyerror!void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) anyerror!void {
+    const allocator = init.gpa;
+    const io = init.io;
 
     // Parse options from command line.
-    const options = try utils.Options.fromArgsAlloc(allocator);
+    const options = try utils.Options.fromArgsAlloc(allocator, init.minimal.args);
 
-    // Create socket.
-    const socket = try std.posix.socket(options.address.any.family, std.posix.SOCK.DGRAM, 0);
-    defer std.posix.close(socket);
+    // Create and bind socket.
+    const socket = try options.address.bind(io, .{ .mode = .dgram });
+    defer socket.close(io);
 
-    // Bind socket.
-    try std.posix.bind(socket, &options.address.any, options.address.getOsSockLen());
-
-    // Initialize the Server with no authentication.
+    // Initialize the Server with Short-Term authentication.
     var server = ztun.Server.init(allocator, ztun.Server.Options{ .authentication_type = .short_term });
     defer server.deinit();
 
@@ -61,7 +54,7 @@ pub fn main() anyerror!void {
 
     // Indefinitely wait for messages.
     while (true) {
-        handleMessage(allocator, socket, &server, buffer) catch |err| {
+        handleMessage(io, allocator, socket, &server, buffer) catch |err| {
             std.log.err("Unexpected error: {}", .{err});
             continue;
         };

@@ -34,19 +34,6 @@ pub const Error = error{
     UnknownTransaction,
 } || ztun.auth.ComputeKeyAllocError || ztun.MessageBuilder.Error || std.mem.Allocator.Error;
 
-const Address = union(enum) {
-    ipv4: std.net.Ip4Address,
-    ipv6: std.net.Ip6Address,
-
-    pub fn from(address: std.net.Address) Address {
-        return switch (address.any.family) {
-            std.posix.AF.INET => .{ .ipv4 = address.in },
-            std.posix.AF.INET6 => .{ .ipv6 = address.in6 },
-            else => unreachable,
-        };
-    }
-};
-
 /// Stores the options of the server.
 options: Options,
 /// Allocator used by the server internally.
@@ -58,7 +45,7 @@ long_term_users: std.StringHashMap(ztun.auth.LongTermAuthenticationParameters),
 /// Stores the association between userhash and username.
 userhash_map: std.StringHashMap([]const u8),
 /// Stores the nonce for known clients.
-client_map: std.AutoHashMap(Address, ClientData),
+client_map: std.AutoHashMap(std.Io.net.IpAddress, ClientData),
 
 /// Represents the data associated with each client that queried the Server.
 const ClientData = struct {
@@ -67,9 +54,9 @@ const ClientData = struct {
 };
 
 /// Represents the part of the Nonce that is unique to each client trying to authenticate.
-const NonceData = packed struct {
+const NonceData = packed struct(i96) {
     // Absolute time until which the nonce is valid,
-    validity: u64,
+    validity: i96,
 
     /// Returns true of the two struct are equal.
     pub fn eql(self: NonceData, other: NonceData) bool {
@@ -129,26 +116,24 @@ fn parseNonce(raw_nonce: []const u8) !Nonce {
 
     const security_features = try SecurityFeatures.decode(raw_nonce[9..][0..4].*);
 
-    var stream = std.io.fixedBufferStream(raw_nonce[13..]);
-    var reader = stream.reader();
+    var reader: std.Io.Reader = .fixed(raw_nonce[13..]);
 
     const nonce_data = NonceData{
-        .validity = reader.readInt(u64, .little) catch unreachable,
+        .validity = reader.takeInt(i96, .little) catch unreachable,
     };
 
     return Nonce{ .security_features = security_features, .data = nonce_data };
 }
 
 /// Encode the nonce to a u8 array.
-fn encodeNonce(nonce: Nonce) [13 + @sizeOf(NonceData)]u8 {
-    var result: [Nonce.size]u8 = undefined;
+fn encodeNonce(nonce: Nonce) [Nonce.size]u8 {
+    var result: [Nonce.size]u8 = @splat(0);
     @memcpy(result[0..9][0..], constants.nonce_cookie_start);
     const encoded_security_features = nonce.security_features.encode();
     @memcpy(result[9..][0..4], encoded_security_features[0..]);
 
-    var stream = std.io.fixedBufferStream(result[13..]);
-    var writer = stream.writer();
-    writer.writeInt(u64, nonce.data.validity, .little) catch unreachable;
+    var writer: std.Io.Writer = .fixed(result[13..]);
+    writer.writeInt(i96, nonce.data.validity, .little) catch unreachable;
 
     return result;
 }
@@ -161,7 +146,7 @@ pub fn init(allocator: std.mem.Allocator, options: Options) Self {
         .short_term_users = std.StringHashMap(ztun.auth.ShortTermAuthenticationParameters).init(allocator),
         .long_term_users = std.StringHashMap(ztun.auth.LongTermAuthenticationParameters).init(allocator),
         .userhash_map = std.StringHashMap([]const u8).init(allocator),
-        .client_map = std.AutoHashMap(Address, ClientData).init(allocator),
+        .client_map = std.AutoHashMap(std.Io.net.IpAddress, ClientData).init(allocator),
     };
 }
 
@@ -233,7 +218,7 @@ fn makeBadRequestMessage(allocator: std.mem.Allocator, request: ztun.Message) zt
     var message_builder = ztun.MessageBuilder.init(allocator);
     defer message_builder.deinit();
 
-    message_builder.setHeader(request.type.method, .error_response, request.transaction_id);
+    message_builder.setHeader(request.type.method, .error_response, .{ .transaction_id = request.transaction_id });
 
     const error_code_attribute = try (attr.common.ErrorCode{ .value = .bad_request, .reason = "Bad Request" }).toAttribute(allocator);
     try message_builder.addAttribute(error_code_attribute);
@@ -258,11 +243,11 @@ const MakeUnauthenticatedMessageOptions = struct {
 };
 
 /// Returns a STUN message representing a Unauthenticated response_error.
-fn makeUnauthenticatedMessage(self: *Self, allocator: std.mem.Allocator, context: *const MessageContext, options: MakeUnauthenticatedMessageOptions) ztun.MessageBuilder.Error!ztun.Message {
+fn makeUnauthenticatedMessage(self: *Self, io: std.Io, allocator: std.mem.Allocator, context: *const MessageContext, options: MakeUnauthenticatedMessageOptions) ztun.MessageBuilder.Error!ztun.Message {
     var message_builder = ztun.MessageBuilder.init(allocator);
     defer message_builder.deinit();
 
-    message_builder.setHeader(context.message.type.method, .error_response, context.message.transaction_id);
+    message_builder.setHeader(context.message.type.method, .error_response, .{ .transaction_id = context.message.transaction_id });
 
     const reason = options.reason orelse "Unauthenticated";
     const error_code_attribute = try (attr.common.ErrorCode{ .value = .unauthenticated, .reason = reason }).toAttribute(allocator);
@@ -275,7 +260,7 @@ fn makeUnauthenticatedMessage(self: *Self, allocator: std.mem.Allocator, context
     }
 
     if (options.add_nonce) {
-        const nonce = try self.getOrUpdateNonce(context.source, .{
+        const nonce = try self.getOrUpdateNonce(io, context.source, .{
             .set_password_algoritms_feature = options.add_password_algorithms,
             .set_username_anonymity_feature = true,
         });
@@ -304,7 +289,7 @@ fn makeUnknownAttributesMessage(allocator: std.mem.Allocator, request: ztun.Mess
     var message_builder = ztun.MessageBuilder.init(allocator);
     defer message_builder.deinit();
 
-    message_builder.setHeader(request.type.method, .error_response, request.transaction_id);
+    message_builder.setHeader(request.type.method, .error_response, .{ .transaction_id = request.transaction_id });
 
     const error_code_attribute = try (attr.common.ErrorCode{ .value = .unknown_attribute, .reason = "Unknown comprehension-required attributes" }).toAttribute(allocator);
     errdefer allocator.free(error_code_attribute.data);
@@ -322,11 +307,11 @@ fn makeUnknownAttributesMessage(allocator: std.mem.Allocator, request: ztun.Mess
 }
 
 /// Returns a STUN message representing a Stale Nonce response_error.
-fn makeStaleNonceMessage(self: *Self, allocator: std.mem.Allocator, context: *MessageContext) ztun.MessageBuilder.Error!ztun.Message {
+fn makeStaleNonceMessage(self: *Self, io: std.Io, allocator: std.mem.Allocator, context: *MessageContext) ztun.MessageBuilder.Error!ztun.Message {
     var message_builder = ztun.MessageBuilder.init(allocator);
     defer message_builder.deinit();
 
-    message_builder.setHeader(context.message.type.method, .error_response, context.message.transaction_id);
+    message_builder.setHeader(context.message.type.method, .error_response, .{ .transaction_id = context.message.transaction_id });
 
     const error_code_attribute = try (attr.common.ErrorCode{ .value = .stale_nonce, .reason = "Stale Nonce" }).toAttribute(allocator);
     errdefer allocator.free(error_code_attribute.data);
@@ -336,7 +321,7 @@ fn makeStaleNonceMessage(self: *Self, allocator: std.mem.Allocator, context: *Me
     errdefer allocator.free(realm_attribute.data);
     try message_builder.addAttribute(realm_attribute);
 
-    const nonce = try self.getOrUpdateNonce(context.source, .{
+    const nonce = try self.getOrUpdateNonce(io, context.source, .{
         .set_password_algoritms_feature = true,
         .set_username_anonymity_feature = true,
     });
@@ -479,7 +464,7 @@ fn findFromUserhash(self: Self, userhash: []const u8) ?ztun.auth.LongTermAuthent
 }
 
 /// Authenticates the sender of a STUN message using the long-term mechanism.
-fn authenticateLongTerm(self: Self, context: *MessageContext) LongTermAuthenticationError!void {
+fn authenticateLongTerm(self: Self, io: std.Io, context: *MessageContext) LongTermAuthenticationError!void {
     const message_attribute_details = context.message_attribute_details.?;
     if (message_attribute_details.message_integrity_index == null and message_attribute_details.message_integrity_sha256_index == null) {
         return error.MissingMessageIntegrity;
@@ -518,9 +503,9 @@ fn authenticateLongTerm(self: Self, context: *MessageContext) LongTermAuthentica
     const stored_nonce = self.getNonce(context.source) orelse return error.StaleNonce;
     if (!stored_nonce.eql(nonce)) return error.StaleNonce;
 
-    const now: u64 = @intCast(std.time.microTimestamp());
+    const now = std.Io.Timestamp.now(io, .boot);
 
-    if (nonce.data.validity < now) {
+    if (nonce.data.validity < now.nanoseconds) {
         return error.StaleNonce;
     }
 
@@ -536,9 +521,8 @@ const getOrUpdateNonceOptions = struct {
 };
 
 /// Get the current nonce for the given client address or generate a new one if it's not valid anymore.
-fn getOrUpdateNonce(self: *Self, source: std.net.Address, options: getOrUpdateNonceOptions) !Nonce {
-    const now: u64 = @intCast(std.time.microTimestamp());
-    const address = Address.from(source);
+fn getOrUpdateNonce(self: *Self, io: std.Io, address: std.Io.net.IpAddress, options: getOrUpdateNonceOptions) !Nonce {
+    const now = std.Io.Timestamp.now(io, .boot);
 
     const gop = try self.client_map.getOrPut(address);
     if (!gop.found_existing) {
@@ -547,13 +531,13 @@ fn getOrUpdateNonce(self: *Self, source: std.net.Address, options: getOrUpdateNo
                 .password_algorithms = options.set_password_algoritms_feature,
                 .username_anonymity = options.set_username_anonymity_feature,
             },
-            .data = NonceData{ .validity = now + 60_000_000 },
+            .data = NonceData{ .validity = now.addDuration(.fromSeconds(60)).nanoseconds },
         };
         gop.value_ptr.* = ClientData{ .nonce = nonce };
         return nonce;
     }
 
-    if (now > gop.value_ptr.nonce.data.validity or
+    if (now.nanoseconds > gop.value_ptr.nonce.data.validity or
         gop.value_ptr.nonce.security_features.password_algorithms != options.set_password_algoritms_feature or
         gop.value_ptr.nonce.security_features.username_anonymity != options.set_username_anonymity_feature)
     {
@@ -562,7 +546,7 @@ fn getOrUpdateNonce(self: *Self, source: std.net.Address, options: getOrUpdateNo
                 .password_algorithms = options.set_password_algoritms_feature,
                 .username_anonymity = options.set_username_anonymity_feature,
             },
-            .data = NonceData{ .validity = now + 60_000_000 },
+            .data = NonceData{ .validity = now.addDuration(.fromSeconds(60)).nanoseconds },
         };
         gop.value_ptr.* = ClientData{ .nonce = nonce };
         return nonce;
@@ -572,9 +556,7 @@ fn getOrUpdateNonce(self: *Self, source: std.net.Address, options: getOrUpdateNo
 }
 
 /// Returns the nonce associated with the given client address, or null if there is none.
-fn getNonce(self: *const Self, source: std.net.Address) ?Nonce {
-    const address = Address.from(source);
-
+fn getNonce(self: *const Self, address: std.Io.net.IpAddress) ?Nonce {
     return if (self.client_map.get(address)) |client_data| client_data.nonce else null;
 }
 
@@ -583,7 +565,7 @@ const MessageContext = struct {
     /// The received message.
     message: ztun.Message,
     /// The source of the message.
-    source: std.net.Address,
+    source: std.Io.net.IpAddress,
     /// An arena that can be used and has the same lifetime than the message.
     arena: std.mem.Allocator,
     /// Details concerning the attributes of the message.
@@ -599,29 +581,16 @@ const MessageContext = struct {
 };
 
 /// Make a
-fn makeXorMappedAddressAttribute(allocator: std.mem.Allocator, source: std.net.Address, transaction_id: u96) !attr.Attribute {
-    const xor_mapped_attribute = switch (source.any.family) {
-        std.posix.AF.INET => blk: {
-            const ipv4 = source.in;
-            break :blk attr.common.encode(attr.common.MappedAddress{
-                .port = std.mem.bigToNative(u16, ipv4.sa.port),
-                .family = attr.common.AddressFamily{ .ipv4 = std.mem.toBytes(ipv4.sa.addr) },
-            }, transaction_id);
-        },
-        std.posix.AF.INET6 => blk: {
-            const ipv6 = source.in6;
-            break :blk attr.common.encode(attr.common.MappedAddress{
-                .port = std.mem.bigToNative(u16, ipv6.sa.port),
-                .family = attr.common.AddressFamily{ .ipv6 = ipv6.sa.addr[0..16].* },
-            }, transaction_id);
-        },
-        else => return error.UnknownAddressFamily,
+fn makeXorMappedAddressAttribute(allocator: std.mem.Allocator, address: std.Io.net.IpAddress, transaction_id: u96) !attr.Attribute {
+    const xor_mapped_attribute = switch (address) {
+        .ip4 => |ipv4| attr.common.encode(.{ .port = ipv4.port, .family = .{ .ipv4 = ipv4.bytes } }, transaction_id),
+        .ip6 => |ipv6| attr.common.encode(.{ .port = ipv6.port, .family = .{ .ipv6 = ipv6.bytes } }, transaction_id),
     };
     return xor_mapped_attribute.toAttribute(allocator);
 }
 
 /// Handles a request after the basic checks and authentication (if needed) has been done.
-pub fn handleRequest(self: *Self, allocator: std.mem.Allocator, context: *MessageContext) Error!MessageResult {
+pub fn handleRequest(self: *Self, io: std.Io, allocator: std.mem.Allocator, context: *MessageContext) Error!MessageResult {
     log.debug("Received {s} request from {any}", .{ @tagName(context.message.type.method), context.source });
 
     // Take care of unknown attributes, as mentioned in Section 6.3.1
@@ -639,21 +608,21 @@ pub fn handleRequest(self: *Self, allocator: std.mem.Allocator, context: *Messag
             self.authenticateShortTerm(context) catch |err| {
                 return switch (err) {
                     error.MissingMessageIntegrity, error.MissingUsername => .{ .response = try makeBadRequestMessage(allocator, context.message) },
-                    error.UnknownUser => .{ .response = try self.makeUnauthenticatedMessage(allocator, context, .{}) },
-                    error.InvalidMessageIntegrity => .{ .response = try self.makeUnauthenticatedMessage(allocator, context, .{}) },
+                    error.UnknownUser => .{ .response = try self.makeUnauthenticatedMessage(io, allocator, context, .{}) },
+                    error.InvalidMessageIntegrity => .{ .response = try self.makeUnauthenticatedMessage(io, allocator, context, .{}) },
                     error.Unrecoverable => .{ .discard = {} },
                 };
             };
         },
         .long_term => {
-            self.authenticateLongTerm(context) catch |err| {
+            self.authenticateLongTerm(io, context) catch |err| {
                 return switch (err) {
-                    error.MissingMessageIntegrity => .{ .response = try self.makeUnauthenticatedMessage(allocator, context, .{ .add_nonce = true, .add_realm = true }) },
+                    error.MissingMessageIntegrity => .{ .response = try self.makeUnauthenticatedMessage(io, allocator, context, .{ .add_nonce = true, .add_realm = true }) },
                     error.MissingAttributes, error.MissingPasswordAlgorithm, error.PasswordAlgorithmMismatch => .{ .response = try makeBadRequestMessage(allocator, context.message) },
-                    error.UnknownUser => .{ .response = try self.makeUnauthenticatedMessage(allocator, context, .{ .add_nonce = true, .add_realm = true, .add_password_algorithms = true }) },
-                    error.InvalidMessageIntegrity => .{ .response = try self.makeUnauthenticatedMessage(allocator, context, .{ .add_nonce = true, .add_realm = true }) },
+                    error.UnknownUser => .{ .response = try self.makeUnauthenticatedMessage(io, allocator, context, .{ .add_nonce = true, .add_realm = true, .add_password_algorithms = true }) },
+                    error.InvalidMessageIntegrity => .{ .response = try self.makeUnauthenticatedMessage(io, allocator, context, .{ .add_nonce = true, .add_realm = true }) },
                     error.InvalidPasswordAlgorithm => .{ .response = try makeBadRequestMessage(allocator, context.message) },
-                    error.StaleNonce => .{ .response = try self.makeStaleNonceMessage(allocator, context) },
+                    error.StaleNonce => .{ .response = try self.makeStaleNonceMessage(io, allocator, context) },
                     error.Unrecoverable => .{ .discard = {} },
                 };
             };
@@ -662,7 +631,7 @@ pub fn handleRequest(self: *Self, allocator: std.mem.Allocator, context: *Messag
 
     var message_builder = ztun.MessageBuilder.init(allocator);
     defer message_builder.deinit();
-    message_builder.setHeader(context.message.type.method, .error_response, context.message.transaction_id);
+    message_builder.setHeader(context.message.type.method, .error_response, .{ .transaction_id = context.message.transaction_id });
     message_builder.setClass(.success_response);
 
     const xor_mapped_address_attribute = makeXorMappedAddressAttribute(allocator, context.source, context.message.transaction_id) catch {
@@ -728,7 +697,7 @@ pub const MessageResult = union(MessageResultType) {
 };
 
 /// Handles a message sent to the server and returns a `MessageResult` result or an error in case of critical failure.
-pub fn handleMessage(self: *Self, allocator: std.mem.Allocator, message: ztun.Message, source: std.net.Address) !MessageResult {
+pub fn handleMessage(self: *Self, io: std.Io, allocator: std.mem.Allocator, message: ztun.Message, source: std.Io.net.IpAddress) !MessageResult {
     var arena_state = std.heap.ArenaAllocator.init(self.allocator);
     defer arena_state.deinit();
 
@@ -746,7 +715,7 @@ pub fn handleMessage(self: *Self, allocator: std.mem.Allocator, message: ztun.Me
 
     // Handle the message depending on its type.
     return switch (message.type.class) {
-        .request => try self.handleRequest(allocator, &context),
+        .request => try self.handleRequest(io, allocator, &context),
         .indication => try self.handleIndication(allocator, &context),
         .success_response, .error_response => .{ .discard = {} },
     };
@@ -873,7 +842,7 @@ test "check fingerprint while processing a message" {
         .length = message.length,
         .attributes = &.{wrong_fingerprint_attribute},
     };
-    try std.testing.expectEqual(MessageResultType.discard, try server.handleMessage(std.testing.allocator, wrong_message, undefined));
+    try std.testing.expectEqual(MessageResultType.discard, try server.handleMessage(std.testing.io, std.testing.allocator, wrong_message, undefined));
 }
 
 test "Short Term Authentication: missing MESSAGE-INTEGRITY/MESSAGE-INTEGRITY-SHA256" {
@@ -897,7 +866,7 @@ test "Short Term Authentication: missing MESSAGE-INTEGRITY/MESSAGE-INTEGRITY-SHA
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
 
-    const result = try server.handleMessage(arena_state.allocator(), message, try std.net.Address.parseIp4("192.168.1.18", 18232));
+    const result = try server.handleMessage(std.testing.io, arena_state.allocator(), message, try std.Io.net.IpAddress.parseIp4("192.168.1.18", 18232));
     try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, result));
     try std.testing.expectEqual(@as(ztun.Class, .error_response), result.response.type.class);
 
@@ -934,7 +903,7 @@ test "Short Term Authentication: missing USERNAME" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
 
-    const result = try server.handleMessage(arena_state.allocator(), message, try std.net.Address.parseIp4("192.168.1.18", 18232));
+    const result = try server.handleMessage(std.testing.io, arena_state.allocator(), message, try std.Io.net.IpAddress.parseIp4("192.168.1.18", 18232));
     try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, result));
     try std.testing.expectEqual(@as(ztun.Class, .error_response), result.response.type.class);
 
@@ -975,7 +944,7 @@ test "Short Term Authentication: unknown USERNAME" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
 
-    const result = try server.handleMessage(arena_state.allocator(), message, try std.net.Address.parseIp4("192.168.1.18", 18232));
+    const result = try server.handleMessage(std.testing.io, arena_state.allocator(), message, try std.Io.net.IpAddress.parseIp4("192.168.1.18", 18232));
     try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, result));
     try std.testing.expectEqual(@as(ztun.Class, .error_response), result.response.type.class);
 
@@ -1015,7 +984,7 @@ test "Short Term Authentication: wrong MESSAGE-INTEGRITY" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
 
-    const result = try server.handleMessage(arena_state.allocator(), message, try std.net.Address.parseIp4("192.168.1.18", 18232));
+    const result = try server.handleMessage(std.testing.io, arena_state.allocator(), message, try std.Io.net.IpAddress.parseIp4("192.168.1.18", 18232));
     try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, result));
     try std.testing.expectEqual(@as(ztun.Class, .error_response), result.response.type.class);
 
@@ -1046,7 +1015,7 @@ test "Long Term Authentication: missing MESSAGE-INTEGRITY/MESSAGE-INTEGRITY-SHA2
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
 
-    const result = try server.handleMessage(arena_state.allocator(), message, try std.net.Address.parseIp4("192.168.1.18", 18232));
+    const result = try server.handleMessage(std.testing.io, arena_state.allocator(), message, try std.Io.net.IpAddress.parseIp4("192.168.1.18", 18232));
     try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, result));
     try std.testing.expectEqual(@as(ztun.Class, .error_response), result.response.type.class);
 
@@ -1088,7 +1057,7 @@ test "Long Term Authentication: missing USERNAME" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
 
-    const result = try server.handleMessage(arena_state.allocator(), message, try std.net.Address.parseIp4("192.168.1.18", 18232));
+    const result = try server.handleMessage(std.testing.io, arena_state.allocator(), message, try std.Io.net.IpAddress.parseIp4("192.168.1.18", 18232));
     try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, result));
     try std.testing.expectEqual(@as(ztun.Class, .error_response), result.response.type.class);
 
@@ -1132,7 +1101,7 @@ test "Long Term Authentication: missing REALM" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
 
-    const result = try server.handleMessage(arena_state.allocator(), message, try std.net.Address.parseIp4("192.168.1.18", 18232));
+    const result = try server.handleMessage(std.testing.io, arena_state.allocator(), message, try std.Io.net.IpAddress.parseIp4("192.168.1.18", 18232));
     try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, result));
     try std.testing.expectEqual(@as(ztun.Class, .error_response), result.response.type.class);
 
@@ -1180,7 +1149,7 @@ test "Long Term Authentication: missing NONCE" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
 
-    const result = try server.handleMessage(arena_state.allocator(), message, try std.net.Address.parseIp4("192.168.1.18", 18232));
+    const result = try server.handleMessage(std.testing.io, arena_state.allocator(), message, try std.Io.net.IpAddress.parseIp4("192.168.1.18", 18232));
     try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, result));
     try std.testing.expectEqual(@as(ztun.Class, .error_response), result.response.type.class);
 
@@ -1200,7 +1169,7 @@ test "Long Term Authentication: invalid USERNAME" {
 
     try server.registerLongTermUser("corendos", authentication_parameters.password);
 
-    const source = try std.net.Address.parseIp4("192.168.1.18", 18232);
+    const source = try std.Io.net.IpAddress.parseIp4("192.168.1.18", 18232);
 
     const message = msg: {
         var builder = ztun.MessageBuilder.init(std.testing.allocator);
@@ -1237,7 +1206,7 @@ test "Long Term Authentication: invalid USERNAME" {
 
     const arena = arena_state.allocator();
 
-    const result = try server.handleMessage(arena, message, source);
+    const result = try server.handleMessage(std.testing.io, arena, message, source);
     try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, result));
     try std.testing.expectEqual(@as(ztun.Class, .error_response), result.response.type.class);
 
@@ -1258,7 +1227,7 @@ test "Long Term Authentication: invalid MESSAGE-INTEGRITY" {
 
     try server.registerLongTermUser("corendos", authentication_parameters.password);
 
-    const source = try std.net.Address.parseIp4("192.168.1.18", 18232);
+    const source = try std.Io.net.IpAddress.parseIp4("192.168.1.18", 18232);
 
     const message = msg: {
         var builder = ztun.MessageBuilder.init(std.testing.allocator);
@@ -1294,7 +1263,7 @@ test "Long Term Authentication: invalid MESSAGE-INTEGRITY" {
 
     const arena = arena_state.allocator();
 
-    const result = try server.handleMessage(arena, message, source);
+    const result = try server.handleMessage(std.testing.io, arena, message, source);
     try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, result));
     try std.testing.expectEqual(@as(ztun.Class, .error_response), result.response.type.class);
 
@@ -1316,7 +1285,7 @@ test "Long Term Authentication: stale nonce" {
 
     try server.registerLongTermUser("corendos", authentication_parameters.password);
 
-    const source = try std.net.Address.parseIp4("192.168.1.18", 18232);
+    const source = try std.Io.net.IpAddress.parseIp4("192.168.1.18", 18232);
 
     const message = msg: {
         var builder = ztun.MessageBuilder.init(std.testing.allocator);
@@ -1353,7 +1322,7 @@ test "Long Term Authentication: stale nonce" {
 
     const arena = arena_state.allocator();
 
-    const result = try server.handleMessage(arena, message, source);
+    const result = try server.handleMessage(std.testing.io, arena, message, source);
     try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, result));
     try std.testing.expectEqual(@as(ztun.Class, .error_response), result.response.type.class);
 
@@ -1374,7 +1343,7 @@ test "Long Term Authentication: use USERHASH" {
 
     try server.registerLongTermUser("corendos", authentication_parameters.password);
 
-    const source = try std.net.Address.parseIp4("192.168.1.18", 18232);
+    const source = try std.Io.net.IpAddress.parseIp4("192.168.1.18", 18232);
 
     const initial_message = msg: {
         var builder = ztun.MessageBuilder.init(std.testing.allocator);
@@ -1388,7 +1357,7 @@ test "Long Term Authentication: use USERHASH" {
     };
     defer initial_message.deinit(std.testing.allocator);
 
-    const intial_result = try server.handleMessage(std.testing.allocator, initial_message, source);
+    const intial_result = try server.handleMessage(std.testing.io, std.testing.allocator, initial_message, source);
     try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, intial_result));
     defer intial_result.response.deinit(std.testing.allocator);
 
@@ -1431,7 +1400,7 @@ test "Long Term Authentication: use USERHASH" {
     };
     defer authenticated_message.deinit(std.testing.allocator);
 
-    const authenticated_result = try server.handleMessage(std.testing.allocator, authenticated_message, source);
+    const authenticated_result = try server.handleMessage(std.testing.io, std.testing.allocator, authenticated_message, source);
     try std.testing.expectEqual(MessageResultType.response, @as(MessageResultType, authenticated_result));
     defer authenticated_result.response.deinit(std.testing.allocator);
 

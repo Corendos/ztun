@@ -56,7 +56,7 @@ pub const MessageType = struct {
         raw_method |= (value & 0b11111000000000) >> 2;
 
         const class = @as(Class, @enumFromInt(@as(u2, @truncate(raw_class))));
-        const method = std.meta.intToEnum(Method, @as(u12, @truncate(raw_method))) catch return null;
+        const method = std.enums.fromInt(Method, @as(u12, @truncate(raw_method))) orelse return null;
         return MessageType{
             .class = class,
             .method = method,
@@ -352,8 +352,8 @@ pub const MessageBuilder = struct {
     }
 
     /// Adds a random transaction ID to the message.
-    pub fn randomTransactionId(self: *MessageBuilder) void {
-        self.transaction_id = std.crypto.random.int(u96);
+    pub fn randomTransactionId(self: *MessageBuilder, random: std.Random) void {
+        self.transaction_id = random.int(u96);
     }
 
     /// Adds a specific transaction ID to the message.
@@ -371,14 +371,18 @@ pub const MessageBuilder = struct {
         self.method = method;
     }
 
+    pub const SetHeaderOpts = union(enum) {
+        transaction_id: u96,
+        random: std.Random,
+    };
+
     /// Sets the header directly in one call. If the transaction ID is not given, a random one will be generated.
-    pub fn setHeader(self: *MessageBuilder, method: Method, class: Class, transaction_id_opt: ?u96) void {
+    pub fn setHeader(self: *MessageBuilder, method: Method, class: Class, opts: SetHeaderOpts) void {
         self.setMethod(method);
         self.setClass(class);
-        if (transaction_id_opt) |transaction_id| {
-            self.transactionId(transaction_id);
-        } else {
-            self.randomTransactionId();
+        switch (opts) {
+            .transaction_id => |v| self.transactionId(v),
+            .random => |r| self.randomTransactionId(r),
         }
     }
 
@@ -530,5 +534,5 @@ test "try to deserialize a message" {
 }
 
 test {
-    _ = std.testing.refAllDeclsRecursive(@This());
+    _ = std.testing.refAllDecls(@This());
 }

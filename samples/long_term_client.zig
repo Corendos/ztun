@@ -2,28 +2,29 @@
 // SPDX-License-Identifier: MIT
 
 const std = @import("std");
-const linux = std.os.linux;
 
 const ztun = @import("ztun");
 
 const utils = @import("utils/utils.zig");
 
-pub fn main() anyerror!void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) anyerror!void {
+    const allocator = init.gpa;
+    const io = init.io;
 
     // Parse options from command line.
-    const options = try utils.Options.fromArgsAlloc(allocator);
+    const options = try utils.Options.fromArgsAlloc(allocator, init.minimal.args);
 
-    // Create socket.
-    const socket = try std.posix.socket(options.address.any.family, std.posix.SOCK.DGRAM, 0);
-    defer std.posix.close(socket);
+    // Create and bind socket.
+    var bind_address = options.address;
+    bind_address.setPort(0);
+    const socket = try bind_address.bind(io, .{ .mode = .dgram });
+    defer socket.close(io);
 
     // Allocate the buffer that will be used to send/receive the request/response.
     const buffer = try allocator.alloc(u8, 4096);
     defer allocator.free(buffer);
+
+    var generator: std.Random.DefaultPrng = .init(@intCast(std.Io.Timestamp.now(io, .boot).toMicroseconds()));
 
     // Make the initial request.
     const initial_request = b: {
@@ -33,7 +34,7 @@ pub fn main() anyerror!void {
         // Binding request with random transaction ID.
         message_builder.setClass(ztun.Class.request);
         message_builder.setMethod(ztun.Method.binding);
-        message_builder.randomTransactionId();
+        message_builder.randomTransactionId(generator.random());
 
         // Add a fingerprint for validity check.
         message_builder.addFingerprint();
@@ -48,13 +49,12 @@ pub fn main() anyerror!void {
     };
 
     // Send the initial request
-    _ = try utils.sendTo(socket, raw_initial_request, options.address);
+    try socket.send(io, &options.address, raw_initial_request);
 
     // Receive the initial response
-    var source: std.net.Address = undefined;
-    const raw_initial_response = try utils.receiveFrom(socket, buffer, &source);
+    const raw_initial_response = try socket.receive(io, buffer);
     const initial_response: ztun.Message = blk: {
-        var reader = std.Io.Reader.fixed(raw_initial_response);
+        var reader = std.Io.Reader.fixed(raw_initial_response.data);
         break :blk try ztun.Message.readAlloc(allocator, &reader);
     };
     defer initial_response.deinit(allocator);
@@ -78,7 +78,7 @@ pub fn main() anyerror!void {
         // Binding request with random transaction ID.
         message_builder.setClass(ztun.Class.request);
         message_builder.setMethod(ztun.Method.binding);
-        message_builder.randomTransactionId();
+        message_builder.randomTransactionId(generator.random());
 
         // Add the USERNAME attribute.
         const username_attribute = try (ztun.attr.common.Username{ .value = "corendos" }).toAttribute(allocator);
@@ -114,12 +114,12 @@ pub fn main() anyerror!void {
     };
 
     // Send the subsequent request
-    _ = try utils.sendTo(socket, raw_subsequent_request, options.address);
+    try socket.send(io, &options.address, raw_subsequent_request);
 
     // Receive the subsequent response
-    const raw_subsequent_response = try utils.receiveFrom(socket, buffer, &source);
+    const raw_subsequent_response = try socket.receive(io, buffer);
     const subsequent_response: ztun.Message = blk: {
-        var reader = std.Io.Reader.fixed(raw_subsequent_response);
+        var reader = std.Io.Reader.fixed(raw_subsequent_response.data);
         break :blk try ztun.Message.readAlloc(allocator, &reader);
     };
     defer subsequent_response.deinit(allocator);

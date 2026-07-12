@@ -145,7 +145,7 @@ pub const common = struct {
             var reader = std.Io.Reader.fixed(attribute.data);
             _ = try reader.takeByte();
             const raw_family_type = reader.takeByte() catch return error.InvalidAttribute;
-            const family_type = std.meta.intToEnum(AddressFamilyType, raw_family_type) catch return error.InvalidAttribute;
+            const family_type = std.enums.fromInt(AddressFamilyType, raw_family_type) orelse return error.InvalidAttribute;
             const port: u16 = reader.takeInt(u16, .big) catch return error.InvalidAttribute;
             switch (family_type) {
                 .ipv4 => {
@@ -193,7 +193,7 @@ pub const common = struct {
             var reader = std.Io.Reader.fixed(attribute.data);
             _ = try reader.takeByte();
             const raw_x_family_type = reader.takeByte() catch return error.InvalidAttribute;
-            const x_family_type = std.meta.intToEnum(AddressFamilyType, raw_x_family_type) catch return error.InvalidAttribute;
+            const x_family_type = std.enums.fromInt(AddressFamilyType, raw_x_family_type) orelse return error.InvalidAttribute;
             const x_port: u16 = reader.takeInt(u16, .big) catch return error.InvalidAttribute;
             switch (x_family_type) {
                 .ipv4 => {
@@ -431,7 +431,7 @@ pub const common = struct {
             _ = reader.takeInt(u16, .big) catch return error.InvalidAttribute;
             const raw_class = reader.takeByte() catch return error.InvalidAttribute;
             const raw_number = reader.takeByte() catch return error.InvalidAttribute;
-            const raw_error_code = std.meta.intToEnum(RawErrorCode, rawErrorCodeFromClassAndNumber(@as(u3, @intCast(raw_class)), raw_number)) catch return error.InvalidAttribute;
+            const raw_error_code = std.enums.fromInt(RawErrorCode, rawErrorCodeFromClassAndNumber(@as(u3, @intCast(raw_class)), raw_number)) orelse return error.InvalidAttribute;
 
             const reason = reader.buffered();
 
@@ -630,7 +630,7 @@ pub const common = struct {
             var reader = std.Io.Reader.fixed(attribute.data);
             _ = try reader.takeByte();
             const raw_family_type = reader.takeByte() catch return error.InvalidAttribute;
-            const family_type = std.meta.intToEnum(AddressFamilyType, raw_family_type) catch return error.InvalidAttribute;
+            const family_type = std.enums.fromInt(AddressFamilyType, raw_family_type) orelse return error.InvalidAttribute;
             const port: u16 = reader.takeInt(u16, .big) catch return error.InvalidAttribute;
             switch (family_type) {
                 .ipv4 => {
@@ -1136,8 +1136,7 @@ test "PASSWORD-ALGORITHMS deserialization" {
         // Type SHA256
         0x00, 0x02,
         // Length
-        0x00,
-        0x00,
+        0x00, 0x00,
         // Empty parameters
     };
 
@@ -1163,8 +1162,7 @@ test "PASSWORD-ALGORITHM deserialization" {
         // Type MD5
         0x00, 0x01,
         // Length
-        0x00,
-        0x00,
+        0x00, 0x00,
         // Empty parameters
     };
 
